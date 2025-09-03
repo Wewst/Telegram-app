@@ -36,7 +36,7 @@ app.get("/health", (req, res) => {
   });
 });
 
-// --- Users --- (ОСТАВЛЯЕМ КАК БЫЛО!)
+// --- Users --- 
 app.post("/users", (req, res) => {
   try {
     const userData = req.body || {};
@@ -49,14 +49,17 @@ app.post("/users", (req, res) => {
     const existingUser = db.users[telegramId];
     
     if (existingUser) {
+      // При обновлении пользователя НЕ меняем баланс
       db.users[telegramId] = {
         ...existingUser,
         username: userData.username || existingUser.username,
         firstName: userData.firstName || existingUser.firstName,
         lastName: userData.lastName || existingUser.lastName,
         avatarUrl: userData.avatarUrl || existingUser.avatarUrl
+        // Баланс остается прежним!
       };
     } else {
+      // Новый пользователь получает баланс 0
       db.users[telegramId] = {
         id: telegramId,
         telegramId: telegramId,
@@ -65,7 +68,7 @@ app.post("/users", (req, res) => {
         lastName: userData.lastName || "",
         avatarUrl: userData.avatarUrl || null,
         joinDate: new Date().toISOString(),
-        balance: 1000 // Начальный баланс
+        balance: 0 // НАЧАЛЬНЫЙ БАЛАНС = 0
       };
     }
     
