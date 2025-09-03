@@ -1,0 +1,26 @@
+{
+  "users": {
+    "777": {
+      "id": "777",
+      "telegramId": "777",
+      "username": "pirate",
+      "firstName": "Jack",
+      "lastName": "Sparrow",
+      "avatarUrl": null,
+      "joinDate": "2025-09-02T10:00:00Z",
+      "balance": 0
+    }
+  },
+  "carts": {
+    "777": [
+      {
+        "productId": 42,
+        "name": "Ром",
+        "price": 50,
+        "quantity": 2,
+        "image": null,
+        "addedAt": "2025-09-02T18:14:32.826Z"
+      }
+    ]
+  }
+}
