@@ -1,11 +1,12 @@
 {
-  "name": "telegram-miniapp-backend",
+  "name": "telegram-backend",
   "version": "1.0.0",
   "description": "Backend for Telegram Mini App",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "test": "echo \"No tests specified\" && exit 0"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -15,7 +16,12 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": ["telegram", "mini-app", "backend"],
-  "author": "Your Name",
+  "keywords": [
+    "telegram",
+    "mini-app",
+    "backend",
+    "api"
+  ],
+  "author": "Wewst",
   "license": "MIT"
 }
