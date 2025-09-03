@@ -1,26 +1,15 @@
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-const fs = require("fs");
-const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const DB_FILE = path.join(__dirname, "db.json");
 
-// --- Helpers: load/save DB ---
-function loadDB() {
-  if (!fs.existsSync(DB_FILE)) return { users: {}, carts: {} };
-  try { 
-    return JSON.parse(fs.readFileSync(DB_FILE, "utf8")); 
-  } catch { 
-    return { users: {}, carts: {} }; 
-  }
-}
-
-function saveDB(db) { 
-  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); 
-}
+// In-memory database (вместо файлов)
+let db = {
+  users: {},
+  carts: {}
+};
 
 // --- Middlewares ---
 app.use(cors({
@@ -32,16 +21,29 @@ app.use(cors({
 app.use(helmet());
 app.use(express.json({ limit: "2mb" }));
 
+// Логирование всех запросов
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`, req.body || '');
+  next();
+});
+
 // --- Health check ---
-app.get("/health", (req, res) => res.json({ 
-  status: "ok", 
-  message: "Telegram Mini App Backend" 
-}));
+app.get("/health", (req, res) => {
+  console.log("Health check requested");
+  res.json({ 
+    status: "ok", 
+    message: "Telegram Mini App Backend is running!",
+    timestamp: new Date().toISOString(),
+    usersCount: Object.keys(db.users).length,
+    cartsCount: Object.keys(db.carts).length
+  });
+});
 
 // --- Users ---
 app.post("/users", (req, res) => {
   try {
-    const db = loadDB();
+    console.log("User save request:", req.body);
+    
     const userData = req.body || {};
     const telegramId = String(userData.telegramId || userData.id || "");
     
@@ -49,7 +51,6 @@ app.post("/users", (req, res) => {
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
-    // Проверяем существующего пользователя
     const existingUser = db.users[telegramId];
     
     if (existingUser) {
@@ -59,7 +60,8 @@ app.post("/users", (req, res) => {
         username: userData.username || existingUser.username,
         firstName: userData.firstName || existingUser.firstName,
         lastName: userData.lastName || existingUser.lastName,
-        avatarUrl: userData.avatarUrl || existingUser.avatarUrl
+        avatarUrl: userData.avatarUrl || existingUser.avatarUrl,
+        lastSeen: new Date().toISOString()
       };
     } else {
       // Создаем нового пользователя
@@ -71,12 +73,12 @@ app.post("/users", (req, res) => {
         lastName: userData.lastName || "",
         avatarUrl: userData.avatarUrl || null,
         joinDate: new Date().toISOString(),
-        balance: 1000 // Начальный баланс
+        lastSeen: new Date().toISOString(),
+        balance: 1000
       };
     }
     
-    saveDB(db);
-    console.log("👤 User saved:", db.users[telegramId]);
+    console.log("User saved:", db.users[telegramId]);
     res.json(db.users[telegramId]);
     
   } catch (error) {
@@ -87,11 +89,17 @@ app.post("/users", (req, res) => {
 
 app.get("/users/:telegramId/balance", (req, res) => {
   try {
-    const db = loadDB();
     const telegramId = String(req.params.telegramId);
+    console.log("Balance request for:", telegramId);
+    
     const user = db.users[telegramId];
-    res.json({ balance: user ? user.balance : 1000 });
+    const balance = user ? user.balance : 1000;
+    
+    console.log("Balance response:", balance);
+    res.json({ balance: balance });
+    
   } catch (error) {
+    console.error("Balance error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -99,16 +107,19 @@ app.get("/users/:telegramId/balance", (req, res) => {
 // --- Cart ---
 app.post("/cart", (req, res) => {
   try {
-    const db = loadDB();
+    console.log("Cart save request:", req.body);
+    
     const item = req.body || {};
-    const telegramId = String(item.userId || item.telegramId || "");
+    const telegramId = String(item.telegramId || item.userId || "");
     
     if (!telegramId) {
-      return res.status(400).json({ error: "Missing userId/telegramId" });
+      return res.status(400).json({ error: "Missing telegramId" });
     }
 
-    // Создаем корзину если не существует
-    db.carts[telegramId] = db.carts[telegramId] || [];
+    // Инициализируем корзину если не существует
+    if (!db.carts[telegramId]) {
+      db.carts[telegramId] = [];
+    }
     
     const existingItemIndex = db.carts[telegramId].findIndex(
       x => String(x.productId) === String(item.productId)
@@ -117,6 +128,7 @@ app.post("/cart", (req, res) => {
     if (existingItemIndex >= 0) {
       // Обновляем количество существующего товара
       db.carts[telegramId][existingItemIndex].quantity += item.quantity || 1;
+      db.carts[telegramId][existingItemIndex].updatedAt = new Date().toISOString();
     } else {
       // Добавляем новый товар
       db.carts[telegramId].push({
@@ -125,26 +137,36 @@ app.post("/cart", (req, res) => {
         price: item.price || 0,
         quantity: item.quantity || 1,
         image: item.image || null,
-        addedAt: new Date().toISOString()
+        addedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
       });
     }
     
-    saveDB(db);
-    console.log(`🛒 Cart saved for user ${telegramId}`);
-    res.json({ success: true, message: "Item added to cart" });
+    console.log(`Cart saved for user ${telegramId}:`, db.carts[telegramId].length, "items");
+    res.json({ 
+      success: true, 
+      message: "Item added to cart",
+      cartItems: db.carts[telegramId].length
+    });
     
   } catch (error) {
-    console.error("Error saving cart:", error);
+    console.error("Cart save error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
 app.get("/cart/:telegramId", (req, res) => {
   try {
-    const db = loadDB();
     const telegramId = String(req.params.telegramId);
-    res.json(db.carts[telegramId] || []);
+    console.log("Cart load request for:", telegramId);
+    
+    const cartItems = db.carts[telegramId] || [];
+    console.log("Cart response:", cartItems.length, "items");
+    
+    res.json(cartItems);
+    
   } catch (error) {
+    console.error("Cart load error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -152,25 +174,60 @@ app.get("/cart/:telegramId", (req, res) => {
 // Удалить товар из корзины
 app.delete("/cart/:telegramId/:productId", (req, res) => {
   try {
-    const db = loadDB();
     const telegramId = String(req.params.telegramId);
     const productId = String(req.params.productId);
     
+    console.log("Delete item request:", { telegramId, productId });
+    
     if (db.carts[telegramId]) {
+      const initialLength = db.carts[telegramId].length;
       db.carts[telegramId] = db.carts[telegramId].filter(
         item => String(item.productId) !== productId
       );
-      saveDB(db);
+      console.log("Items deleted:", initialLength - db.carts[telegramId].length);
     }
     
-    res.json({ success: true });
+    res.json({ success: true, message: "Item deleted" });
+    
   } catch (error) {
+    console.error("Delete item error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+// --- Debug endpoint ---
+app.get("/debug", (req, res) => {
+  res.json({
+    usersCount: Object.keys(db.users).length,
+    cartsCount: Object.keys(db.carts).length,
+    memoryUsage: process.memoryUsage(),
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Очистка старых данных (опционально)
+setInterval(() => {
+  const now = Date.now();
+  const oneDay = 24 * 60 * 60 * 1000;
+  
+  // Очищаем пользователей who не заходили больше 7 дней
+  Object.keys(db.users).forEach(telegramId => {
+    const user = db.users[telegramId];
+    if (user.lastSeen && (now - new Date(user.lastSeen).getTime() > 120 * oneDay)) {
+      delete db.users[telegramId];
+      delete db.carts[telegramId];
+      console.log("Cleaned up old user:", telegramId);
+    }
+  });
+}, 60 * 60 * 1000); // Каждый час
 
 // --- Start server ---
 app.listen(PORT, () => {
   console.log(`⚓️ Backend running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
+  console.log(`📍 Debug: http://localhost:${PORT}/debug`);
+  console.log(`🚀 Ready for Telegram Mini App!`);
 });
+
+module.exports = app;
