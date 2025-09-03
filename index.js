@@ -36,7 +36,7 @@ app.get("/health", (req, res) => {
   });
 });
 
-// --- Users --- 
+// --- Users ---
 app.post("/users", (req, res) => {
   try {
     const userData = req.body || {};
@@ -49,17 +49,16 @@ app.post("/users", (req, res) => {
     const existingUser = db.users[telegramId];
     
     if (existingUser) {
-      // При обновлении пользователя НЕ меняем баланс
+      // 🔥 СОХРАНЯЕМ БАЛАНС из запроса
       db.users[telegramId] = {
         ...existingUser,
+        balance: userData.balance !== undefined ? userData.balance : existingUser.balance,
         username: userData.username || existingUser.username,
         firstName: userData.firstName || existingUser.firstName,
         lastName: userData.lastName || existingUser.lastName,
         avatarUrl: userData.avatarUrl || existingUser.avatarUrl
-        // Баланс остается прежним!
       };
     } else {
-      // Новый пользователь получает баланс 0
       db.users[telegramId] = {
         id: telegramId,
         telegramId: telegramId,
@@ -68,28 +67,15 @@ app.post("/users", (req, res) => {
         lastName: userData.lastName || "",
         avatarUrl: userData.avatarUrl || null,
         joinDate: new Date().toISOString(),
-        balance: 0 // НАЧАЛЬНЫЙ БАЛАНС = 0
+        balance: userData.balance !== undefined ? userData.balance : 0
       };
     }
     
-    console.log("👤 User saved:", db.users[telegramId]);
+    console.log("👤 User saved with balance:", db.users[telegramId].balance);
     res.json(db.users[telegramId]);
     
   } catch (error) {
     console.error("Error saving user:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-app.get("/users/:telegramId/balance", (req, res) => {
-  try {
-    const telegramId = String(req.params.telegramId);
-    const user = db.users[telegramId];
-    const balance = user ? user.balance : 1000;
-    
-    res.json({ balance: balance });
-    
-  } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -150,7 +136,7 @@ app.get("/cart/:telegramId", (req, res) => {
   }
 });
 
-// --- Balance operations --- (НОВЫЕ ФУНКЦИИ!)
+// --- Balance operations ---
 app.post("/users/:telegramId/balance/add", (req, res) => {
   try {
     const telegramId = String(req.params.telegramId);
