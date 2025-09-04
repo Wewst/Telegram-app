@@ -12,15 +12,35 @@ let db = {
   orders: {}
 };
 
-// --- Middlewares ---
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "DELETE", "PUT"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
-
-app.use(helmet());
-app.use(express.json({ limit: "2mb" }));
+// Детальное логирование всех запросов
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`\n=== ${timestamp} ${req.method} ${req.originalUrl} ===`);
+  
+  if (Object.keys(req.body).length > 0) {
+    console.log('BODY:', JSON.stringify(req.body, null, 2));
+  }
+  
+  if (Object.keys(req.query).length > 0) {
+    console.log('QUERY:', req.query);
+  }
+  
+  if (Object.keys(req.params).length > 0) {
+    console.log('PARAMS:', req.params);
+  }
+  
+  const originalSend = res.send;
+  res.send = function(body) {
+    console.log('RESPONSE:', {
+      status: res.statusCode,
+      body: typeof body === 'string' ? body.substring(0, 200) + '...' : JSON.stringify(body).substring(0, 200) + '...'
+    });
+    console.log(`=== END ${req.method} ${req.originalUrl} ===\n`);
+    return originalSend.call(this, body);
+  };
+  
+  next();
+});
 
 // Логирование
 app.use((req, res, next) => {
@@ -84,13 +104,17 @@ app.post("/users", (req, res) => {
 app.post("/cart", (req, res) => {
   try {
     const item = req.body || {};
-    const telegramId = String(item.telegramId || item.userId || "");
+    const telegramId = String(`item.telegramId  item.userId  ""`);
+    
+    console.log("📥 CART POST REQUEST:", JSON.stringify(item, null, 2));
     
     if (!telegramId) {
+      console.log("❌ Missing telegramId");
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
     if (!db.users[telegramId]) {
+      console.log("❌ User not found:", telegramId);
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -102,9 +126,11 @@ app.post("/cart", (req, res) => {
 
     if (existingItemIndex >= 0) {
       db.carts[telegramId][existingItemIndex].quantity += item.quantity || 1;
-      console.log("Cart item updated:", {
+      console.log("🛒 CART ITEM UPDATED:", {
         user: telegramId,
-        product: db.carts[telegramId][existingItemIndex].name,
+        productId: item.productId,
+        name: db.carts[telegramId][existingItemIndex].name,
+        price: db.carts[telegramId][existingItemIndex].price,
         quantity: db.carts[telegramId][existingItemIndex].quantity
       });
     } else {
@@ -117,17 +143,32 @@ app.post("/cart", (req, res) => {
         addedAt: new Date().toISOString()
       };
       db.carts[telegramId].push(newItem);
-      console.log("Cart item added:", {
+      console.log("🛒 NEW CART ITEM ADDED:", {
         user: telegramId,
-        product: newItem.name,
+        productId: newItem.productId,
+        name: newItem.name,
+        price: newItem.price,
         quantity: newItem.quantity
       });
     }
+
+    // Логируем всю корзину после изменения
+    console.log("📊 FULL CART AFTER UPDATE:", {
+      user: telegramId,
+      totalItems: db.carts[telegramId].length,
+      items: db.carts[telegramId].map(item => ({
+        productId: item.productId,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity
+      })),
+      totalPrice: db.carts[telegramId].reduce((sum, item) => sum + (item.price * item.quantity), 0)
+    });
     
     res.json({ success: true, message: "Item added to cart" });
     
   } catch (error) {
-    console.error("Error saving cart:", error);
+    console.error("❌ CART ERROR:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -137,11 +178,22 @@ app.get("/cart/:telegramId", (req, res) => {
     const telegramId = String(req.params.telegramId);
     const cartItems = db.carts[telegramId] || [];
     
-    console.log("Cart loaded for user:", telegramId, "Items:", cartItems.length);
+    console.log("📦 CART LOADED:", {
+      user: telegramId,
+      itemCount: cartItems.length,
+      items: cartItems.map(item => ({
+        productId: item.productId,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity
+      })),
+      total: cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0)
+    });
+    
     res.json(cartItems);
     
   } catch (error) {
-    console.error("Cart load error:", error);
+    console.error("❌ CART LOAD ERROR:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
