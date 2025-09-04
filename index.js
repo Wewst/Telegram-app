@@ -210,3 +210,80 @@ app.listen(PORT, () => {
   console.log(`⚓️ Backend running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
 });
+
+// Добавьте эти endpoints после существующих
+
+// Сохранить всю корзину
+app.post("/cart/save", (req, res) => {
+  try {
+    const { telegramId, cart, totalPrice } = req.body;
+    
+    if (!telegramId) {
+      return res.status(400).json({ error: "Missing telegramId" });
+    }
+
+    // Убедимся что пользователь существует
+    if (!db.users[telegramId]) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Сохраняем всю корзину
+    db.carts[telegramId] = cart || [];
+    
+    console.log(`💾 Cart saved for user ${telegramId}, items: ${cart ? cart.length : 0}`);
+    res.json({ success: true, message: "Cart saved successfully" });
+    
+  } catch (error) {
+    console.error("Error saving cart:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Очистить корзину
+app.post("/cart/clear", (req, res) => {
+  try {
+    const { telegramId } = req.body;
+    
+    if (!telegramId) {
+      return res.status(400).json({ error: "Missing telegramId" });
+    }
+
+    db.carts[telegramId] = [];
+    
+    console.log(`🗑️ Cart cleared for user ${telegramId}`);
+    res.json({ success: true, message: "Cart cleared successfully" });
+    
+  } catch (error) {
+    console.error("Error clearing cart:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Создать заказ
+app.post("/orders", (req, res) => {
+  try {
+    const { telegramId, items, total, status } = req.body;
+    
+    if (!telegramId) {
+      return res.status(400).json({ error: "Missing telegramId" });
+    }
+
+    const orderId = Date.now().toString();
+    
+    db.orders[orderId] = {
+      orderId,
+      telegramId,
+      items: items || [],
+      total: total || 0,
+      status: status || "completed",
+      orderDate: new Date().toISOString()
+    };
+    
+    console.log(`✅ Order created: ${orderId} for user ${telegramId}, total: ${total}`);
+    res.json({ success: true, orderId });
+    
+  } catch (error) {
+    console.error("Order creation error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
