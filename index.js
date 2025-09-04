@@ -12,39 +12,25 @@ let db = {
   orders: {}
 };
 
-// Детальное логирование всех запросов
-app.use((req, res, next) => {
-  const timestamp = new Date().toISOString();
-  console.log(`\n=== ${timestamp} ${req.method} ${req.originalUrl} ===`);
-  
-  if (Object.keys(req.body).length > 0) {
-    console.log('BODY:', JSON.stringify(req.body, null, 2));
-  }
-  
-  if (Object.keys(req.query).length > 0) {
-    console.log('QUERY:', req.query);
-  }
-  
-  if (Object.keys(req.params).length > 0) {
-    console.log('PARAMS:', req.params);
-  }
-  
-  const originalSend = res.send;
-  res.send = function(body) {
-    console.log('RESPONSE:', {
-      status: res.statusCode,
-      body: typeof body === 'string' ? body.substring(0, 200) + '...' : JSON.stringify(body).substring(0, 200) + '...'
-    });
-    console.log(`=== END ${req.method} ${req.originalUrl} ===\n`);
-    return originalSend.call(this, body);
-  };
-  
-  next();
-});
+// --- Middlewares ---
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "DELETE", "PUT"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
 
-// Логирование
+app.use(helmet());
+app.use(express.json({ limit: "2mb" }));
+
+// Простое логирование
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`, req.body || '');
+  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  
+  // Только для POST/PUT запросов логируем body
+  if (['POST', 'PUT'].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
+    console.log('Request body:', JSON.stringify(req.body));
+  }
+  
   next();
 });
 
@@ -104,17 +90,15 @@ app.post("/users", (req, res) => {
 app.post("/cart", (req, res) => {
   try {
     const item = req.body || {};
-    const telegramId = String(`item.telegramId  item.userId  ""`);
+    const telegramId = String(item.telegramId || item.userId || "");
     
-    console.log("📥 CART POST REQUEST:", JSON.stringify(item, null, 2));
+    console.log("📥 CART POST REQUEST:", item);
     
     if (!telegramId) {
-      console.log("❌ Missing telegramId");
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
     if (!db.users[telegramId]) {
-      console.log("❌ User not found:", telegramId);
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -161,8 +145,7 @@ app.post("/cart", (req, res) => {
         name: item.name,
         price: item.price,
         quantity: item.quantity
-      })),
-      totalPrice: db.carts[telegramId].reduce((sum, item) => sum + (item.price * item.quantity), 0)
+      }))
     });
     
     res.json({ success: true, message: "Item added to cart" });
@@ -186,8 +169,7 @@ app.get("/cart/:telegramId", (req, res) => {
         name: item.name,
         price: item.price,
         quantity: item.quantity
-      })),
-      total: cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0)
+      }))
     });
     
     res.json(cartItems);
@@ -203,6 +185,8 @@ app.post("/cart/remove", (req, res) => {
   try {
     const { telegramId, productId } = req.body;
     
+    console.log("📥 REMOVE ITEM REQUEST:", { telegramId, productId });
+    
     if (!telegramId || !productId) {
       return res.status(400).json({ error: "Missing telegramId or productId" });
     }
@@ -213,19 +197,22 @@ app.post("/cart/remove", (req, res) => {
 
     db.carts[telegramId] = db.carts[telegramId] || [];
     
+    // Находим товар для логирования перед удалением
     const itemToRemove = db.carts[telegramId].find(
       item => String(item.productId) === String(productId)
     );
     
+    // Удаляем товар из корзины
     db.carts[telegramId] = db.carts[telegramId].filter(
       item => String(item.productId) !== String(productId)
     );
     
     if (itemToRemove) {
-      console.log("Item removed from cart:", {
+      console.log("🗑️ REMOVED ITEM COMPLETELY:", {
         user: telegramId,
-        product: itemToRemove.name,
-        productId: productId
+        productId: itemToRemove.productId,
+        name: itemToRemove.name,
+        price: itemToRemove.price
       });
     }
     
@@ -242,15 +229,21 @@ app.post("/cart/clear", (req, res) => {
   try {
     const { telegramId } = req.body;
     
+    console.log("📥 CLEAR CART REQUEST for user:", telegramId);
+    
     if (!telegramId) {
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
     const cartItems = db.carts[telegramId] || [];
-    console.log("Cart cleared for user:", telegramId, "Removed items:", cartItems.length);
+    console.log("🗑️ CLEARING CART:", {
+      user: telegramId,
+      itemsBeingRemoved: cartItems.length
+    });
     
     db.carts[telegramId] = [];
     
+    console.log("✅ CART CLEARED for user:", telegramId);
     res.json({ success: true, message: "Cart cleared successfully" });
     
   } catch (error) {
@@ -332,7 +325,7 @@ app.post("/orders", (req, res) => {
       orderDate: new Date().toISOString()
     };
     
-    console.log("Order created:", { orderId, user: telegramId, total, itemsCount: items.length });
+    console.log("Order created:", { orderId, user: telegramId, total, itemsCount: items ? items.length : 0 });
     res.json({ success: true, orderId });
     
   } catch (error) {
