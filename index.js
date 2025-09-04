@@ -80,11 +80,10 @@ app.post("/users", (req, res) => {
   }
 });
 
-// --- Cart --- (ОБНОВЛЯЕМ ДЛЯ СОХРАНЕНИЯ!)
-app.post("/cart", (req, res) => {
+// --- Cart --- (УДАЛЯЕМ СТАРЫЙ И ОСТАВЛЯЕМ ТОЛЬКО НОВЫЙ)
+app.post("/cart/save", (req, res) => {
   try {
-    const item = req.body || {};
-    const telegramId = String(item.telegramId || item.userId || "");
+    const { telegramId, cart, totalPrice } = req.body;
     
     if (!telegramId) {
       return res.status(400).json({ error: "Missing telegramId" });
@@ -95,27 +94,11 @@ app.post("/cart", (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    db.carts[telegramId] = db.carts[telegramId] || [];
+    // Сохраняем всю корзину как есть
+    db.carts[telegramId] = cart || [];
     
-    const existingItemIndex = db.carts[telegramId].findIndex(
-      x => String(x.productId) === String(item.productId)
-    );
-
-    if (existingItemIndex >= 0) {
-      db.carts[telegramId][existingItemIndex].quantity += item.quantity || 1;
-    } else {
-      db.carts[telegramId].push({
-        productId: item.productId,
-        name: item.name || "Unknown Product",
-        price: item.price || 0,
-        quantity: item.quantity || 1,
-        image: item.image || null,
-        addedAt: new Date().toISOString()
-      });
-    }
-    
-    console.log(`🛒 Cart saved for user ${telegramId}`);
-    res.json({ success: true, message: "Item added to cart" });
+    console.log(`💾 Cart saved for user ${telegramId}:, cart`);
+    res.json({ success: true, message: "Cart saved successfully" });
     
   } catch (error) {
     console.error("Error saving cart:", error);
@@ -123,6 +106,7 @@ app.post("/cart", (req, res) => {
   }
 });
 
+// Получить корзину пользователя
 app.get("/cart/:telegramId", (req, res) => {
   try {
     const telegramId = String(req.params.telegramId);
@@ -132,6 +116,26 @@ app.get("/cart/:telegramId", (req, res) => {
     
   } catch (error) {
     console.error("Cart load error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Очистить корзину
+app.post("/cart/clear", (req, res) => {
+  try {
+    const { telegramId } = req.body;
+    
+    if (!telegramId) {
+      return res.status(400).json({ error: "Missing telegramId" });
+    }
+
+    db.carts[telegramId] = [];
+    
+    console.log(`🗑️ Cart cleared for user ${telegramId}`);
+    res.json({ success: true, message: "Cart cleared successfully" });
+    
+  } catch (error) {
+    console.error("Error clearing cart:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -212,52 +216,6 @@ app.listen(PORT, () => {
 });
 
 // Добавьте эти endpoints после существующих
-
-// Сохранить всю корзину
-app.post("/cart/save", (req, res) => {
-  try {
-    const { telegramId, cart, totalPrice } = req.body;
-    
-    if (!telegramId) {
-      return res.status(400).json({ error: "Missing telegramId" });
-    }
-
-    // Убедимся что пользователь существует
-    if (!db.users[telegramId]) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    // Сохраняем всю корзину
-    db.carts[telegramId] = cart || [];
-    
-    console.log(`💾 Cart saved for user ${telegramId}, items: ${cart ? cart.length : 0}`);
-    res.json({ success: true, message: "Cart saved successfully" });
-    
-  } catch (error) {
-    console.error("Error saving cart:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// Очистить корзину
-app.post("/cart/clear", (req, res) => {
-  try {
-    const { telegramId } = req.body;
-    
-    if (!telegramId) {
-      return res.status(400).json({ error: "Missing telegramId" });
-    }
-
-    db.carts[telegramId] = [];
-    
-    console.log(`🗑️ Cart cleared for user ${telegramId}`);
-    res.json({ success: true, message: "Cart cleared successfully" });
-    
-  } catch (error) {
-    console.error("Error clearing cart:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
 
 // Создать заказ
 app.post("/orders", (req, res) => {
