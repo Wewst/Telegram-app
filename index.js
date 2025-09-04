@@ -8,7 +8,8 @@ const PORT = process.env.PORT || 3001;
 // In-memory database
 let db = {
   users: {},
-  carts: {}
+  carts: {},
+  orders: {}
 };
 
 // --- Middlewares ---
@@ -80,10 +81,13 @@ app.post("/users", (req, res) => {
   }
 });
 
-// --- Cart --- (УДАЛЯЕМ СТАРЫЙ И ОСТАВЛЯЕМ ТОЛЬКО НОВЫЙ)
-app.post("/cart/save", (req, res) => {
+// --- Cart Endpoints ---
+
+// Добавить товар в корзину или обновить количество
+app.post("/cart", (req, res) => {
   try {
-    const { telegramId, cart, totalPrice } = req.body;
+    const item = req.body || {};
+    const telegramId = String(item.telegramId || item.userId || "");
     
     if (!telegramId) {
       return res.status(400).json({ error: "Missing telegramId" });
@@ -94,11 +98,40 @@ app.post("/cart/save", (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // Сохраняем всю корзину как есть
-    db.carts[telegramId] = cart || [];
+    db.carts[telegramId] = db.carts[telegramId] || [];
     
-    console.log(`💾 Cart saved for user ${telegramId}:, cart`);
-    res.json({ success: true, message: "Cart saved successfully" });
+    const existingItemIndex = db.carts[telegramId].findIndex(
+      x => String(x.productId) === String(item.productId)
+    );
+
+    if (existingItemIndex >= 0) {
+      // Если передано отрицательное quantity - уменьшаем
+      if (item.quantity < 0) {
+        db.carts[telegramId][existingItemIndex].quantity += item.quantity;
+        if (db.carts[telegramId][existingItemIndex].quantity <= 0) {
+          // Если количество стало 0 или меньше - удаляем товар
+          db.carts[telegramId].splice(existingItemIndex, 1);
+        }
+      } else {
+        // Увеличиваем количество
+        db.carts[telegramId][existingItemIndex].quantity += item.quantity || 1;
+      }
+    } else {
+      // Добавляем новый товар только если quantity положительное
+      if (item.quantity > 0) {
+        db.carts[telegramId].push({
+          productId: item.productId,
+          name: item.name || "Unknown Product",
+          price: item.price || 0,
+          quantity: item.quantity || 1,
+          image: item.image || null,
+          addedAt: new Date().toISOString()
+        });
+      }
+    }
+    
+    console.log(`🛒 Cart updated for user ${telegramId}`);
+    res.json({ success: true, message: "Cart updated" });
     
   } catch (error) {
     console.error("Error saving cart:", error);
@@ -116,6 +149,39 @@ app.get("/cart/:telegramId", (req, res) => {
     
   } catch (error) {
     console.error("Cart load error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Удалить товар из корзины
+app.post("/cart/remove", (req, res) => {
+  try {
+    const { telegramId, productId } = req.body;
+    
+    if (!telegramId || !productId) {
+      return res.status(400).json({ error: "Missing telegramId or productId" });
+    }
+
+    if (!db.users[telegramId]) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    db.carts[telegramId] = db.carts[telegramId] || [];
+    
+    // Удаляем товар из корзины
+    const initialLength = db.carts[telegramId].length;
+    db.carts[telegramId] = db.carts[telegramId].filter(
+      item => String(item.productId) !== String(productId)
+    );
+    
+    console.log(`🗑️ Removed product ${productId} from user ${telegramId}`);
+    res.json({ 
+      success: true, 
+      message: "Product removed from cart"
+    });
+    
+  } catch (error) {
+    console.error("Error removing from cart:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -199,25 +265,7 @@ app.post("/users/:telegramId/balance/subtract", (req, res) => {
   }
 });
 
-// --- Debug ---
-app.get("/debug", (req, res) => {
-  res.json({
-    usersCount: Object.keys(db.users).length,
-    cartsCount: Object.keys(db.carts).length,
-    memoryUsage: process.memoryUsage(),
-    uptime: process.uptime()
-  });
-});
-
-// --- Start server ---
-app.listen(PORT, () => {
-  console.log(`⚓️ Backend running on port ${PORT}`);
-  console.log(`📍 Health check: http://localhost:${PORT}/health`);
-});
-
-// Добавьте эти endpoints после существующих
-
-// Создать заказ
+// --- Orders ---
 app.post("/orders", (req, res) => {
   try {
     const { telegramId, items, total, status } = req.body;
@@ -244,4 +292,58 @@ app.post("/orders", (req, res) => {
     console.error("Order creation error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
+});
+
+// Получить заказы пользователя
+app.get("/orders/:telegramId", (req, res) => {
+  try {
+    const telegramId = String(req.params.telegramId);
+    const userOrders = Object.values(db.orders).filter(order => order.telegramId === telegramId);
+    
+    res.json(userOrders);
+    
+  } catch (error) {
+    console.error("Orders load error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// --- Debug ---
+app.get("/debug", (req, res) => {
+  res.json({
+    usersCount: Object.keys(db.users).length,
+    cartsCount: Object.keys(db.carts).length,
+    ordersCount: Object.keys(db.orders).length,
+    memoryUsage: process.memoryUsage(),
+    uptime: process.uptime()
+  });
+});
+
+// Получить информацию о пользователе
+app.get("/users/:telegramId", (req, res) => {
+  try {
+    const telegramId = String(req.params.telegramId);
+    const user = db.users[telegramId];
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    res.json(user);
+    
+  } catch (error) {
+    console.error("User load error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// --- Start server ---
+app.listen(PORT, () => {
+  console.log(`⚓️ Backend running on port ${PORT}`);
+  console.log(`📍 Health check: http://localhost:${PORT}/health`);
+  console.log(`🛒 Available cart endpoints:`);
+  console.log(`   POST /cart - Add/update item`);
+  console.log(`   GET /cart/:telegramId - Get user's cart`);
+  console.log(`   POST /cart/remove - Remove item`);
+  console.log(`   POST /cart/clear - Clear cart`);
 });
