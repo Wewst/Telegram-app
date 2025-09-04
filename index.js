@@ -110,27 +110,33 @@ app.post("/cart", (req, res) => {
         db.carts[telegramId][existingItemIndex].quantity += item.quantity;
         if (db.carts[telegramId][existingItemIndex].quantity <= 0) {
           // Если количество стало 0 или меньше - удаляем товар
-          db.carts[telegramId].splice(existingItemIndex, 1);
+          const removedItem = db.carts[telegramId].splice(existingItemIndex, 1)[0];
+          console.log(`🗑️ Removed product: ${removedItem.name} (ID: ${removedItem.productId}) from user ${telegramId}`);
+        } else {
+          console.log(`➖ Decreased quantity: ${db.carts[telegramId][existingItemIndex].name} to ${db.carts[telegramId][existingItemIndex].quantity} for user ${telegramId}`);
         }
       } else {
         // Увеличиваем количество
         db.carts[telegramId][existingItemIndex].quantity += item.quantity || 1;
+        console.log(`➕ Increased quantity: ${db.carts[telegramId][existingItemIndex].name} to ${db.carts[telegramId][existingItemIndex].quantity} for user ${telegramId}`);
       }
     } else {
       // Добавляем новый товар только если quantity положительное
       if (item.quantity > 0) {
-        db.carts[telegramId].push({
+        const newItem = {
           productId: item.productId,
           name: item.name || "Unknown Product",
           price: item.price || 0,
           quantity: item.quantity || 1,
           image: item.image || null,
           addedAt: new Date().toISOString()
-        });
+        };
+        db.carts[telegramId].push(newItem);
+        console.log(`🛒 Added new product: ${newItem.name} (ID: ${newItem.productId}) for user ${telegramId}`);
       }
     }
     
-    console.log(`🛒 Cart updated for user ${telegramId}`);
+    console.log(`📊 Cart summary for user ${telegramId}: ${db.carts[telegramId].length} items`);
     res.json({ success: true, message: "Cart updated" });
     
   } catch (error) {
@@ -144,6 +150,16 @@ app.get("/cart/:telegramId", (req, res) => {
   try {
     const telegramId = String(req.params.telegramId);
     const cartItems = db.carts[telegramId] || [];
+    
+    console.log(`📦 Loading cart for user ${telegramId}: ${cartItems.length} items`);
+    if (cartItems.length > 0) {
+      console.log("📋 Cart contents:", cartItems.map(item => ({
+        name: item.name,
+        productId: item.productId,
+        quantity: item.quantity,
+        price: item.price
+      })));
+    }
     
     res.json(cartItems);
     
@@ -168,16 +184,27 @@ app.post("/cart/remove", (req, res) => {
 
     db.carts[telegramId] = db.carts[telegramId] || [];
     
+    // Находим товар для логирования перед удалением
+    const itemToRemove = db.carts[telegramId].find(
+      item => String(item.productId) === String(productId)
+    );
+    
     // Удаляем товар из корзины
     const initialLength = db.carts[telegramId].length;
     db.carts[telegramId] = db.carts[telegramId].filter(
       item => String(item.productId) !== String(productId)
     );
     
-    console.log(`🗑️ Removed product ${productId} from user ${telegramId}`);
+    if (itemToRemove) {
+      console.log(`🗑️ Completely removed product: ${itemToRemove.name} (ID: ${itemToRemove.productId}) from user ${telegramId}`);
+    } else {
+      console.log(`🗑️ Attempted to remove product ID: ${productId} from user ${telegramId}, but product not found`);
+    }
+    
     res.json({ 
       success: true, 
-      message: "Product removed from cart"
+      message: "Product removed from cart",
+      removed: initialLength !== db.carts[telegramId].length
     });
     
   } catch (error) {
@@ -195,9 +222,20 @@ app.post("/cart/clear", (req, res) => {
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
+    const cartItems = db.carts[telegramId] || [];
+    console.log(`🗑️ Clearing cart for user ${telegramId}: removing ${cartItems.length} items`);
+    
+    if (cartItems.length > 0) {
+      console.log("📋 Items being cleared:", cartItems.map(item => ({
+        name: item.name,
+        productId: item.productId,
+        quantity: item.quantity
+      })));
+    }
+    
     db.carts[telegramId] = [];
     
-    console.log(`🗑️ Cart cleared for user ${telegramId}`);
+    console.log(`✅ Cart cleared for user ${telegramId}`);
     res.json({ success: true, message: "Cart cleared successfully" });
     
   } catch (error) {
@@ -286,6 +324,13 @@ app.post("/orders", (req, res) => {
     };
     
     console.log(`✅ Order created: ${orderId} for user ${telegramId}, total: ${total}`);
+    console.log("📦 Order items:", items.map(item => ({
+      name: item.name,
+      productId: item.productId,
+      quantity: item.quantity,
+      price: item.price
+    })));
+    
     res.json({ success: true, orderId });
     
   } catch (error) {
