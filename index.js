@@ -1,90 +1,16 @@
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// --- PostgreSQL Connection ---
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/telegram_app',
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
-
-// Функция инициализации базы данных
-async function initDatabase() {
-  let retries = 5;
-  
-  while (retries > 0) {
-    try {
-      console.log("🔄 Attempting to connect to database...");
-      
-      // Создаем таблицы если они не существуют
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS users (
-          id SERIAL PRIMARY KEY,
-          telegram_id VARCHAR(255) UNIQUE NOT NULL,
-          username VARCHAR(255),
-          first_name VARCHAR(255),
-          last_name VARCHAR(255),
-          avatar_url TEXT,
-          balance INTEGER DEFAULT 0,
-          join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS reviews (
-          id SERIAL PRIMARY KEY,
-          user_id VARCHAR(255) NOT NULL,
-          author VARCHAR(255) NOT NULL,
-          text TEXT NOT NULL,
-          rating INTEGER DEFAULT 5,
-          avatar_text VARCHAR(10),
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE(user_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS cart_items (
-          id SERIAL PRIMARY KEY,
-          telegram_id VARCHAR(255) NOT NULL,
-          product_id VARCHAR(255) NOT NULL,
-          name VARCHAR(255) NOT NULL,
-          price INTEGER NOT NULL,
-          quantity INTEGER DEFAULT 1,
-          image TEXT,
-          added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE(telegram_id, product_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS orders (
-          id SERIAL PRIMARY KEY,
-          telegram_id VARCHAR(255) NOT NULL,
-          total INTEGER NOT NULL,
-          status VARCHAR(50) DEFAULT 'completed',
-          order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
-
-      console.log("✅ Database tables initialized");
-      return true;
-
-    } catch (error) {
-      console.error(`❌ Database initialization error (${retries} retries left):`, error.message);
-      retries--;
-      
-      if (retries === 0) {
-        console.error("❌ Failed to initialize database after multiple attempts");
-        return false;
-      }
-      
-      // Ждем перед повторной попыткой
-      await new Promise(resolve => setTimeout(resolve, 3000));
-    }
-  }
-}
+// In-memory database
+let db = {
+  users: {},
+  carts: {},
+  orders: {}
+};
 
 // --- Middlewares ---
 app.use(cors({
@@ -99,37 +25,26 @@ app.use(express.json({ limit: "2mb" }));
 // Простое логирование
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  
+  // Только для POST/PUT запросов логируем body
+  if (['POST', 'PUT'].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
+    console.log('Request body:', JSON.stringify(req.body));
+  }
+  
   next();
 });
 
 // --- Health check ---
-app.get("/health", async (req, res) => {
-  try {
-    // Проверяем подключение к базе
-    await pool.query('SELECT 1');
-    
-    const usersCount = await pool.query('SELECT COUNT(*) FROM users');
-    const reviewsCount = await pool.query('SELECT COUNT(*) FROM reviews');
-    
-    res.json({ 
-      status: "ok", 
-      message: "Telegram Mini App Backend with PostgreSQL is running!",
-      users: parseInt(usersCount.rows[0].count),
-      reviews: parseInt(reviewsCount.rows[0].count),
-      timestamp: new Date().toISOString(),
-      database: "connected"
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      error: "Database error",
-      details: error.message,
-      database: "disconnected"
-    });
-  }
+app.get("/health", (req, res) => {
+  res.json({ 
+    status: "ok", 
+    message: "Telegram Mini App Backend is running!",
+    timestamp: new Date().toISOString()
+  });
 });
 
 // --- Users ---
-app.post("/users", async (req, res) => {
+app.post("/users", (req, res) => {
   try {
     const userData = req.body || {};
     const telegramId = String(userData.telegramId || userData.id || "");
@@ -138,28 +53,32 @@ app.post("/users", async (req, res) => {
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
-    const result = await pool.query(`
-      INSERT INTO users (telegram_id, username, first_name, last_name, avatar_url, balance)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      ON CONFLICT (telegram_id) 
-      DO UPDATE SET 
-        username = EXCLUDED.username,
-        first_name = EXCLUDED.first_name,
-        last_name = EXCLUDED.last_name,
-        avatar_url = EXCLUDED.avatar_url,
-        balance = EXCLUDED.balance,
-        updated_at = CURRENT_TIMESTAMP
-      RETURNING *
-    `, [
-      telegramId,
-      userData.username || "",
-      userData.firstName || "",
-      userData.lastName || "",
-      userData.avatarUrl || null,
-      userData.balance || 0
-    ]);
-
-    res.json(result.rows[0]);
+    const existingUser = db.users[telegramId];
+    
+    if (existingUser) {
+      db.users[telegramId] = {
+        ...existingUser,
+        balance: userData.balance !== undefined ? userData.balance : existingUser.balance,
+        username: userData.username || existingUser.username,
+        firstName: userData.firstName || existingUser.firstName,
+        lastName: userData.lastName || existingUser.lastName,
+        avatarUrl: userData.avatarUrl || existingUser.avatarUrl
+      };
+    } else {
+      db.users[telegramId] = {
+        id: telegramId,
+        telegramId: telegramId,
+        username: userData.username || "",
+        firstName: userData.firstName || "",
+        lastName: userData.lastName || "",
+        avatarUrl: userData.avatarUrl || null,
+        joinDate: new Date().toISOString(),
+        balance: userData.balance !== undefined ? userData.balance : 0
+      };
+    }
+    
+    console.log("User saved:", db.users[telegramId]);
+    res.json(db.users[telegramId]);
     
   } catch (error) {
     console.error("Error saving user:", error);
@@ -167,59 +86,67 @@ app.post("/users", async (req, res) => {
   }
 });
 
-// Получить баланс пользователя
-app.get("/users/:telegramId/balance", async (req, res) => {
-  try {
-    const telegramId = String(req.params.telegramId);
-    
-    const result = await pool.query(
-      'SELECT balance FROM users WHERE telegram_id = $1', 
-      [telegramId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.json({ balance: 0 });
-    }
-
-    res.json({ balance: result.rows[0].balance });
-    
-  } catch (error) {
-    console.error("Balance fetch error:", error);
-    res.status(500).json({ error: "Internal server error", balance: 0 });
-  }
-});
-
 // --- Cart ---
-app.post("/cart", async (req, res) => {
+app.post("/cart", (req, res) => {
   try {
     const item = req.body || {};
     const telegramId = String(item.telegramId || item.userId || "");
     
-    console.log("🛒 CART UPDATE:", { 
-      user: telegramId, 
-      productId: item.productId,
-      action: "ADD/UPDATE"
-    });
+    console.log("📥 CART POST REQUEST:", item);
     
     if (!telegramId) {
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
-    await pool.query(`
-      INSERT INTO cart_items (telegram_id, product_id, name, price, quantity, image)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      ON CONFLICT (telegram_id, product_id) 
-      DO UPDATE SET 
-        quantity = cart_items.quantity + EXCLUDED.quantity,
-        added_at = CURRENT_TIMESTAMP
-    `, [
-      telegramId,
-      item.productId,
-      item.name || "Unknown Product",
-      item.price || 0,
-      item.quantity || 1,
-      item.image || null
-    ]);
+    if (!db.users[telegramId]) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    db.carts[telegramId] = db.carts[telegramId] || [];
+    
+    const existingItemIndex = db.carts[telegramId].findIndex(
+      x => String(x.productId) === String(item.productId)
+    );
+
+    if (existingItemIndex >= 0) {
+      db.carts[telegramId][existingItemIndex].quantity += item.quantity || 1;
+      console.log("🛒 CART ITEM UPDATED:", {
+        user: telegramId,
+        productId: item.productId,
+        name: db.carts[telegramId][existingItemIndex].name,
+        price: db.carts[telegramId][existingItemIndex].price,
+        quantity: db.carts[telegramId][existingItemIndex].quantity
+      });
+    } else {
+      const newItem = {
+        productId: item.productId,
+        name: item.name || "Unknown Product",
+        price: item.price || 0,
+        quantity: item.quantity || 1,
+        image: item.image || null,
+        addedAt: new Date().toISOString()
+      };
+      db.carts[telegramId].push(newItem);
+      console.log("🛒 NEW CART ITEM ADDED:", {
+        user: telegramId,
+        productId: newItem.productId,
+        name: newItem.name,
+        price: newItem.price,
+        quantity: newItem.quantity
+      });
+    }
+
+    // Логируем всю корзину после изменения
+    console.log("📊 FULL CART AFTER UPDATE:", {
+      user: telegramId,
+      totalItems: db.carts[telegramId].length,
+      items: db.carts[telegramId].map(item => ({
+        productId: item.productId,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity
+      }))
+    });
     
     res.json({ success: true, message: "Item added to cart" });
     
@@ -229,16 +156,23 @@ app.post("/cart", async (req, res) => {
   }
 });
 
-app.get("/cart/:telegramId", async (req, res) => {
+app.get("/cart/:telegramId", (req, res) => {
   try {
     const telegramId = String(req.params.telegramId);
+    const cartItems = db.carts[telegramId] || [];
     
-    const result = await pool.query(
-      'SELECT * FROM cart_items WHERE telegram_id = $1 ORDER BY added_at DESC',
-      [telegramId]
-    );
+    console.log("📦 CART LOADED:", {
+      user: telegramId,
+      itemCount: cartItems.length,
+      items: cartItems.map(item => ({
+        productId: item.productId,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity
+      }))
+    });
     
-    res.json(result.rows);
+    res.json(cartItems);
     
   } catch (error) {
     console.error("❌ CART LOAD ERROR:", error);
@@ -247,18 +181,40 @@ app.get("/cart/:telegramId", async (req, res) => {
 });
 
 // Удалить товар из корзины
-app.post("/cart/remove", async (req, res) => {
+app.post("/cart/remove", (req, res) => {
   try {
     const { telegramId, productId } = req.body;
+    
+    console.log("📥 REMOVE ITEM REQUEST:", { telegramId, productId });
     
     if (!telegramId || !productId) {
       return res.status(400).json({ error: "Missing telegramId or productId" });
     }
 
-    await pool.query(
-      'DELETE FROM cart_items WHERE telegram_id = $1 AND product_id = $2',
-      [telegramId, productId]
+    if (!db.users[telegramId]) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    db.carts[telegramId] = db.carts[telegramId] || [];
+    
+    // Находим товар для логирования перед удалением
+    const itemToRemove = db.carts[telegramId].find(
+      item => String(item.productId) === String(productId)
     );
+    
+    // Удаляем товар из корзины
+    db.carts[telegramId] = db.carts[telegramId].filter(
+      item => String(item.productId) !== String(productId)
+    );
+    
+    if (itemToRemove) {
+      console.log("🗑️ REMOVED ITEM COMPLETELY:", {
+        user: telegramId,
+        productId: itemToRemove.productId,
+        name: itemToRemove.name,
+        price: itemToRemove.price
+      });
+    }
     
     res.json({ success: true, message: "Product removed from cart" });
     
@@ -269,19 +225,25 @@ app.post("/cart/remove", async (req, res) => {
 });
 
 // Очистить корзину
-app.post("/cart/clear", async (req, res) => {
+app.post("/cart/clear", (req, res) => {
   try {
     const { telegramId } = req.body;
+    
+    console.log("📥 CLEAR CART REQUEST for user:", telegramId);
     
     if (!telegramId) {
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
-    await pool.query(
-      'DELETE FROM cart_items WHERE telegram_id = $1',
-      [telegramId]
-    );
+    const cartItems = db.carts[telegramId] || [];
+    console.log("🗑️ CLEARING CART:", {
+      user: telegramId,
+      itemsBeingRemoved: cartItems.length
+    });
     
+    db.carts[telegramId] = [];
+    
+    console.log("✅ CART CLEARED for user:", telegramId);
     res.json({ success: true, message: "Cart cleared successfully" });
     
   } catch (error) {
@@ -291,30 +253,23 @@ app.post("/cart/clear", async (req, res) => {
 });
 
 // --- Balance operations ---
-app.post("/users/:telegramId/balance/add", async (req, res) => {
+app.post("/users/:telegramId/balance/add", (req, res) => {
   try {
     const telegramId = String(req.params.telegramId);
     const { amount } = req.body;
+    
+    if (!db.users[telegramId]) {
+      return res.status(404).json({ error: "User not found" });
+    }
     
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: "Invalid amount" });
     }
     
-    await pool.query(`
-      INSERT INTO users (telegram_id, balance)
-      VALUES ($1, $2)
-      ON CONFLICT (telegram_id) 
-      DO UPDATE SET 
-        balance = users.balance + EXCLUDED.balance,
-        updated_at = CURRENT_TIMESTAMP
-    `, [telegramId, amount]);
+    db.users[telegramId].balance += amount;
     
-    const result = await pool.query(
-      'SELECT balance FROM users WHERE telegram_id = $1',
-      [telegramId]
-    );
-    
-    res.json({ newBalance: result.rows[0]?.balance || 0 });
+    console.log("Balance added:", { user: telegramId, amount, newBalance: db.users[telegramId].balance });
+    res.json({ success: true, newBalance: db.users[telegramId].balance });
     
   } catch (error) {
     console.error("Balance add error:", error);
@@ -322,35 +277,27 @@ app.post("/users/:telegramId/balance/add", async (req, res) => {
   }
 });
 
-app.post("/users/:telegramId/balance/subtract", async (req, res) => {
+app.post("/users/:telegramId/balance/subtract", (req, res) => {
   try {
     const telegramId = String(req.params.telegramId);
     const { amount } = req.body;
+    
+    if (!db.users[telegramId]) {
+      return res.status(404).json({ error: "User not found" });
+    }
     
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: "Invalid amount" });
     }
     
-    const result = await pool.query(
-      'SELECT balance FROM users WHERE telegram_id = $1',
-      [telegramId]
-    );
-    
-    if (result.rows.length === 0 || result.rows[0].balance < amount) {
+    if (db.users[telegramId].balance < amount) {
       return res.status(400).json({ error: "Insufficient balance" });
     }
     
-    await pool.query(
-      'UPDATE users SET balance = balance - $1, updated_at = CURRENT_TIMESTAMP WHERE telegram_id = $2',
-      [amount, telegramId]
-    );
+    db.users[telegramId].balance -= amount;
     
-    const newBalanceResult = await pool.query(
-      'SELECT balance FROM users WHERE telegram_id = $1',
-      [telegramId]
-    );
-    
-    res.json({ success: true, newBalance: newBalanceResult.rows[0].balance });
+    console.log("Balance subtracted:", { user: telegramId, amount, newBalance: db.users[telegramId].balance });
+    res.json({ success: true, newBalance: db.users[telegramId].balance });
     
   } catch (error) {
     console.error("Balance subtract error:", error);
@@ -358,95 +305,8 @@ app.post("/users/:telegramId/balance/subtract", async (req, res) => {
   }
 });
 
-// --- Reviews ---
-app.post("/reviews", async (req, res) => {
-  try {
-    const reviewData = req.body || {};
-    const telegramId = String(reviewData.userId || reviewData.telegramId || "");
-    
-    if (!telegramId) {
-      return res.status(400).json({ error: "User ID is required" });
-    }
-    
-    if (!reviewData.text || reviewData.text.trim().length < 5) {
-      return res.status(400).json({ error: "Review text must be at least 5 characters" });
-    }
-
-    const existingReview = await pool.query(
-      'SELECT * FROM reviews WHERE user_id = $1',
-      [telegramId]
-    );
-
-    if (existingReview.rows.length > 0) {
-      return res.status(400).json({ error: "User has already submitted a review" });
-    }
-
-    const result = await pool.query(`
-      INSERT INTO reviews (user_id, author, text, rating, avatar_text)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *
-    `, [
-      telegramId,
-      reviewData.author || "User_" + telegramId.slice(-4),
-      reviewData.text.trim(),
-      reviewData.rating || 5,
-      (reviewData.author || "U").charAt(0).toUpperCase()
-    ]);
-
-    console.log("📝 NEW REVIEW ADDED:", { user: telegramId });
-    res.json({ success: true, review: result.rows[0] });
-
-  } catch (error) {
-    console.error("❌ REVIEW ERROR:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-app.get("/reviews", async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = (page - 1) * limit;
-
-    const reviewsResult = await pool.query(
-      'SELECT * FROM reviews ORDER BY created_at DESC LIMIT $1 OFFSET $2',
-      [limit, offset]
-    );
-
-    const countResult = await pool.query('SELECT COUNT(*) FROM reviews');
-
-    res.json({
-      reviews: reviewsResult.rows,
-      total: parseInt(countResult.rows[0].count),
-      page,
-      totalPages: Math.ceil(parseInt(countResult.rows[0].count) / limit)
-    });
-
-  } catch (error) {
-    console.error("❌ REVIEWS LOAD ERROR:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-app.get("/reviews/user/:telegramId", async (req, res) => {
-  try {
-    const telegramId = String(req.params.telegramId);
-    
-    const result = await pool.query(
-      'SELECT * FROM reviews WHERE user_id = $1',
-      [telegramId]
-    );
-
-    res.json({ hasReviewed: result.rows.length > 0 });
-
-  } catch (error) {
-    console.error("❌ USER REVIEW CHECK ERROR:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
 // --- Orders ---
-app.post("/orders", async (req, res) => {
+app.post("/orders", (req, res) => {
   try {
     const { telegramId, items, total, status } = req.body;
     
@@ -454,13 +314,19 @@ app.post("/orders", async (req, res) => {
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
-    const result = await pool.query(`
-      INSERT INTO orders (telegram_id, total, status)
-      VALUES ($1, $2, $3)
-      RETURNING id
-    `, [telegramId, total || 0, status || "completed"]);
-
-    res.json({ success: true, orderId: result.rows[0].id });
+    const orderId = Date.now().toString();
+    
+    db.orders[orderId] = {
+      orderId,
+      telegramId,
+      items: items || [],
+      total: total || 0,
+      status: status || "completed",
+      orderDate: new Date().toISOString()
+    };
+    
+    console.log("Order created:", { orderId, user: telegramId, total, itemsCount: items ? items.length : 0 });
+    res.json({ success: true, orderId });
     
   } catch (error) {
     console.error("Order creation error:", error);
@@ -469,63 +335,18 @@ app.post("/orders", async (req, res) => {
 });
 
 // --- Debug ---
-app.get("/debug", async (req, res) => {
-  try {
-    const usersCount = await pool.query('SELECT COUNT(*) FROM users');
-    const cartsCount = await pool.query('SELECT COUNT(*) FROM cart_items');
-    const ordersCount = await pool.query('SELECT COUNT(*) FROM orders');
-    const reviewsCount = await pool.query('SELECT COUNT(*) FROM reviews');
-
-    res.json({
-      usersCount: parseInt(usersCount.rows[0].count),
-      cartsCount: parseInt(cartsCount.rows[0].count),
-      ordersCount: parseInt(ordersCount.rows[0].count),
-      reviewsCount: parseInt(reviewsCount.rows[0].count),
-      uptime: process.uptime()
-    });
-  } catch (error) {
-    res.status(500).json({ error: "Database error" });
-  }
-});
-
-// Принудительная инициализация базы
-app.get("/force-init", async (req, res) => {
-  try {
-    await initDatabase();
-    res.json({ success: true, message: "Database initialized" });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+app.get("/debug", (req, res) => {
+  res.json({
+    usersCount: Object.keys(db.users).length,
+    cartsCount: Object.keys(db.carts).length,
+    ordersCount: Object.keys(db.orders).length,
+    memoryUsage: process.memoryUsage(),
+    uptime: process.uptime()
+  });
 });
 
 // --- Start server ---
-async function startServer() {
-  try {
-    console.log("🔧 Initializing database...");
-    
-    const dbInitialized = await initDatabase();
-    
-    if (!dbInitialized) {
-      console.error("❌ Critical: Database initialization failed");
-      process.exit(1);
-    }
-    
-    app.listen(PORT, () => {
-      console.log(`🚀 Backend running on port ${PORT}`);
-      console.log(`🏥 Health check: http://localhost:${PORT}/health`);
-      console.log(`💾 Connected to PostgreSQL`);
-    });
-    
-  } catch (error) {
-    console.error("❌ Failed to start server:", error);
-    process.exit(1);
-  }
-}
-
-// Проверяем переменные окружения
-console.log("🔍 Environment check:");
-console.log("PORT:", process.env.PORT);
-console.log("DATABASE_URL:", process.env.DATABASE_URL ? "✅ Set" : "❌ Not set");
-console.log("NODE_ENV:", process.env.NODE_ENV);
-
-startServer();
+app.listen(PORT, () => {
+  console.log(`Backend running on port ${PORT}`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+});
