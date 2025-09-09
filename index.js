@@ -43,12 +43,18 @@ loadDB();
 // Автосохранение каждые 30 секунд
 setInterval(saveDB, 30000);
 
-// --- Middlewares ---
+// --- CORS Middleware ---
 app.use(cors({
   origin: "*",
-  methods: ["GET", "POST", "DELETE", "PUT"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
+
+// Обработка preflight OPTIONS запросов
+app.options('*', cors());
 
 app.use(helmet());
 app.use(express.json({ limit: "2mb" }));
@@ -56,6 +62,11 @@ app.use(express.json({ limit: "2mb" }));
 // Простое логирование
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  
+  // Устанавливаем CORS заголовки для всех ответов
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   
   // Только для POST/PUT запросов логируем body
   if (['POST', 'PUT'].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
@@ -398,17 +409,22 @@ app.post("/reviews", (req, res) => {
     const reviewData = req.body || {};
     const telegramId = String(reviewData.userId || reviewData.telegramId || "");
     
+    console.log("📥 REVIEW POST REQUEST:", reviewData);
+    
     if (!telegramId) {
+      console.log("❌ Missing user ID");
       return res.status(400).json({ error: "User ID is required" });
     }
     
     if (!reviewData.text || reviewData.text.trim().length < 5) {
+      console.log("❌ Invalid review text");
       return res.status(400).json({ error: "Review text must be at least 5 characters" });
     }
 
     // Проверяем, не оставлял ли пользователь уже отзыв
     const existingReviewIndex = db.reviews.findIndex(review => review.userId === telegramId);
     if (existingReviewIndex >= 0) {
+      console.log("❌ User already has a review");
       return res.status(400).json({ error: "User has already submitted a review" });
     }
 
@@ -424,7 +440,8 @@ app.post("/reviews", (req, res) => {
     };
 
     db.reviews.unshift(newReview); // Добавляем в начало
-    console.log("📝 NEW REVIEW ADDED:", { user: telegramId, reviewId: newReview.id });
+    console.log("📝 NEW REVIEW ADDED:", newReview);
+    console.log("📊 Total reviews now:", db.reviews.length);
 
     res.json({ success: true, review: newReview });
 
