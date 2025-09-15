@@ -193,11 +193,19 @@ app.post("/cart/add", (req, res) => {
     console.log("📥 CART ADD REQUEST:", item);
     
     if (!telegramId) {
-      return res.status(400).json({ error: "Missing telegramId" });
+      return res.status(400).json({ 
+        success: false, 
+        error: "Missing telegramId",
+        cart: []
+      });
     }
 
     if (!db.users[telegramId]) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ 
+        success: false, 
+        error: "User not found",
+        cart: []
+      });
     }
 
     db.carts[telegramId] = db.carts[telegramId] || [];
@@ -245,11 +253,20 @@ app.post("/cart/add", (req, res) => {
       }))
     });
     
-    res.json(db.carts[telegramId]);
+    // ВОЗВРАЩАЕМ УСПЕШНЫЙ ОТВЕТ С КОРЗИНОЙ
+    res.json({
+    success: true,
+    message: "Operation completed", // опционально
+    cart: db.carts[telegramId] || []
+});
     
   } catch (error) {
     console.error("❌ CART ADD ERROR:", error);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ 
+      success: false, 
+      error: "Internal server error",
+      cart: []
+    });
   }
 });
 
