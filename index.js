@@ -43,21 +43,28 @@ loadDB();
 // Автосохранение каждые 30 секунд
 setInterval(saveDB, 30000);
 
-// Разрешаем все CORS запросы
+// ===== ПРАВИЛЬНЫЕ CORS НАСТРОЙКИ =====
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
+    
     next();
 });
 
+// Дополнительные CORS middleware для совместимости
 app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  credentials: true,
-  preflightContinue: false,
-  optionsSuccessStatus: 204
+    origin: "*",
+    methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+    credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204
 }));
 
 app.options('*', cors());
@@ -67,10 +74,6 @@ app.use(express.json({ limit: "2mb" }));
 // Простое логирование
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
-  
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   
   if (['POST', 'PUT'].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
     console.log('Request body:', JSON.stringify(req.body));
@@ -160,27 +163,32 @@ app.get("/cart/get", (req, res) => {
     console.log("📥 CART GET REQUEST for user:", telegramId);
     
     if (!telegramId) {
-      return res.status(400).json({ error: "Missing telegramId parameter" });
+      return res.status(400).json({ 
+        success: false, 
+        error: "Missing telegramId parameter",
+        cart: []
+      });
     }
 
     const cartItems = db.carts[telegramId] || [];
     
     console.log("📦 CART LOADED:", {
       user: telegramId,
-      itemCount: cartItems.length,
-      items: cartItems.map(item => ({
-        productId: item.productId,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity
-      }))
+      itemCount: cartItems.length
     });
     
-    res.json(cartItems);
+    res.json({
+      success: true,
+      cart: cartItems
+    });
     
   } catch (error) {
     console.error("❌ CART GET ERROR:", error);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ 
+      success: false, 
+      error: "Internal server error",
+      cart: []
+    });
   }
 });
 
@@ -219,8 +227,6 @@ app.post("/cart/add", (req, res) => {
       console.log("🛒 CART ITEM UPDATED:", {
         user: telegramId,
         productId: item.productId,
-        name: db.carts[telegramId][existingItemIndex].name,
-        price: db.carts[telegramId][existingItemIndex].price,
         quantity: db.carts[telegramId][existingItemIndex].quantity
       });
     } else {
@@ -235,30 +241,20 @@ app.post("/cart/add", (req, res) => {
       db.carts[telegramId].push(newItem);
       console.log("🛒 NEW CART ITEM ADDED:", {
         user: telegramId,
-        productId: newItem.productId,
-        name: newItem.name,
-        price: newItem.price,
-        quantity: newItem.quantity
+        productId: newItem.productId
       });
     }
 
-    console.log("📊 FULL CART AFTER UPDATE:", {
+    console.log("📊 CART UPDATED:", {
       user: telegramId,
-      totalItems: db.carts[telegramId].length,
-      items: db.carts[telegramId].map(item => ({
-        productId: item.productId,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity
-      }))
+      totalItems: db.carts[telegramId].length
     });
     
-    // ВОЗВРАЩАЕМ УСПЕШНЫЙ ОТВЕТ С КОРЗИНОЙ
     res.json({
-    success: true,
-    message: "Operation completed", // опционально
-    cart: db.carts[telegramId] || []
-});
+      success: true,
+      message: "Товар добавлен в корзину",
+      cart: db.carts[telegramId]
+    });
     
   } catch (error) {
     console.error("❌ CART ADD ERROR:", error);
@@ -278,11 +274,19 @@ app.post("/cart/update", (req, res) => {
     console.log("📥 CART UPDATE REQUEST:", { telegramId, productId, quantity });
     
     if (!telegramId || !productId) {
-      return res.status(400).json({ error: "Missing telegramId or productId" });
+      return res.status(400).json({ 
+        success: false, 
+        error: "Missing telegramId or productId",
+        cart: []
+      });
     }
 
     if (!db.users[telegramId]) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ 
+        success: false, 
+        error: "User not found",
+        cart: []
+      });
     }
 
     db.carts[telegramId] = db.carts[telegramId] || [];
@@ -292,17 +296,17 @@ app.post("/cart/update", (req, res) => {
     );
 
     if (itemIndex === -1) {
-      return res.status(404).json({ error: "Item not found in cart" });
+      return res.status(404).json({ 
+        success: false, 
+        error: "Item not found in cart",
+        cart: []
+      });
     }
 
     if (quantity === 0) {
       // Удаляем товар если количество 0
-      const removedItem = db.carts[telegramId].splice(itemIndex, 1)[0];
-      console.log("🗑 ITEM REMOVED (quantity 0):", {
-        user: telegramId,
-        productId: removedItem.productId,
-        name: removedItem.name
-      });
+      db.carts[telegramId].splice(itemIndex, 1);
+      console.log("🗑 ITEM REMOVED (quantity 0):", { user: telegramId, productId });
     } else {
       // Обновляем количество
       db.carts[telegramId][itemIndex].quantity += quantity;
@@ -314,20 +318,23 @@ app.post("/cart/update", (req, res) => {
       
       // Если количество стало <= 0, удаляем товар
       if (db.carts[telegramId][itemIndex].quantity <= 0) {
-        const removedItem = db.carts[telegramId].splice(itemIndex, 1)[0];
-        console.log("🗑 ITEM REMOVED (negative quantity):", {
-          user: telegramId,
-          productId: removedItem.productId,
-          name: removedItem.name
-        });
+        db.carts[telegramId].splice(itemIndex, 1);
+        console.log("🗑 ITEM REMOVED (negative quantity):", { user: telegramId, productId });
       }
     }
 
-    res.json(db.carts[telegramId]);
+    res.json({
+      success: true,
+      cart: db.carts[telegramId]
+    });
     
   } catch (error) {
     console.error("❌ CART UPDATE ERROR:", error);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ 
+      success: false, 
+      error: "Internal server error",
+      cart: []
+    });
   }
 });
 
@@ -339,39 +346,47 @@ app.post("/cart/remove", (req, res) => {
     console.log("📥 CART REMOVE REQUEST:", { telegramId, productId });
     
     if (!telegramId || !productId) {
-      return res.status(400).json({ error: "Missing telegramId or productId" });
+      return res.status(400).json({ 
+        success: false, 
+        error: "Missing telegramId or productId",
+        cart: []
+      });
     }
 
     if (!db.users[telegramId]) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ 
+        success: false, 
+        error: "User not found",
+        cart: []
+      });
     }
 
     db.carts[telegramId] = db.carts[telegramId] || [];
     
-    // Находим товар для логирования перед удалением
-    const itemToRemove = db.carts[telegramId].find(
-      item => String(item.productId) === String(productId)
-    );
-    
     // Удаляем товар из корзины
+    const initialLength = db.carts[telegramId].length;
     db.carts[telegramId] = db.carts[telegramId].filter(
       item => String(item.productId) !== String(productId)
     );
     
-    if (itemToRemove) {
-      console.log("🗑 ITEM COMPLETELY REMOVED:", {
-        user: telegramId,
-        productId: itemToRemove.productId,
-        name: itemToRemove.name,
-        price: itemToRemove.price
-      });
-    }
+    console.log("🗑 ITEM REMOVED:", {
+      user: telegramId,
+      productId: productId,
+      removed: initialLength > db.carts[telegramId].length
+    });
     
-    res.json(db.carts[telegramId]);
+    res.json({
+      success: true,
+      cart: db.carts[telegramId]
+    });
     
   } catch (error) {
     console.error("❌ CART REMOVE ERROR:", error);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ 
+      success: false, 
+      error: "Internal server error",
+      cart: []
+    });
   }
 });
 
@@ -383,23 +398,31 @@ app.post("/cart/clear", (req, res) => {
     console.log("📥 CART CLEAR REQUEST for user:", telegramId);
     
     if (!telegramId) {
-      return res.status(400).json({ error: "Missing telegramId" });
+      return res.status(400).json({ 
+        success: false, 
+        error: "Missing telegramId",
+        cart: []
+      });
     }
 
-    const cartItems = db.carts[telegramId] || [];
-    console.log("🗑 CLEARING CART:", {
-      user: telegramId,
-      itemsBeingRemoved: cartItems.length
-    });
-    
+    const cartItemsCount = db.carts[telegramId] ? db.carts[telegramId].length : 0;
     db.carts[telegramId] = [];
     
-    console.log("✅ CART CLEARED for user:", telegramId);
-    res.json(db.carts[telegramId]);
+    console.log("✅ CART CLEARED:", { user: telegramId, itemsRemoved: cartItemsCount });
+    
+    res.json({
+      success: true,
+      message: "Корзина очищена",
+      cart: []
+    });
     
   } catch (error) {
     console.error("❌ CART CLEAR ERROR:", error);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ 
+      success: false, 
+      error: "Internal server error",
+      cart: []
+    });
   }
 });
 
