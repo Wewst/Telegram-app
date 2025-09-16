@@ -45,12 +45,12 @@ setInterval(saveDB, 30000);
 
 // ===== ПРАВИЛЬНЫЕ CORS НАСТРОЙКИ =====
 app.use(cors({
-    origin: "*",
-    methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
-    credentials: true,
-    preflightContinue: false,
-    optionsSuccessStatus: 204
+  origin: "*",
+  methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+  credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
 
 app.options('*', cors());
@@ -490,7 +490,7 @@ app.post("/orders", (req, res) => {
   }
 });
 
-// --- Reviews --- (БЕЗ ИЗМЕНЕНИЙ)
+// --- Reviews ---
 app.post("/reviews", (req, res) => {
   try {
     const reviewData = req.body || {};
