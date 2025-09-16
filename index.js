@@ -44,20 +44,6 @@ loadDB();
 setInterval(saveDB, 30000);
 
 // ===== ПРАВИЛЬНЫЕ CORS НАСТРОЙКИ =====
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
-    
-    next();
-});
-
-// Дополнительные CORS middleware для совместимости
 app.use(cors({
     origin: "*",
     methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
@@ -153,14 +139,12 @@ app.get("/users/:telegramId/balance", (req, res) => {
   }
 });
 
-// ===== НОВАЯ СТРУКТУРА ENDPOINTS ДЛЯ КОРЗИНЫ =====
+// ===== ОБНОВЛЕННАЯ КОРЗИНА =====
 
 // 1. ПОЛУЧИТЬ корзину (GET)
 app.get("/cart/get", (req, res) => {
   try {
     const telegramId = req.query.telegramId;
-    
-    console.log("📥 CART GET REQUEST for user:", telegramId);
     
     if (!telegramId) {
       return res.status(400).json({ 
@@ -171,11 +155,6 @@ app.get("/cart/get", (req, res) => {
     }
 
     const cartItems = db.carts[telegramId] || [];
-    
-    console.log("📦 CART LOADED:", {
-      user: telegramId,
-      itemCount: cartItems.length
-    });
     
     res.json({
       success: true,
@@ -195,61 +174,50 @@ app.get("/cart/get", (req, res) => {
 // 2. ДОБАВИТЬ в корзину (POST)
 app.post("/cart/add", (req, res) => {
   try {
-    const item = req.body || {};
-    const telegramId = String(item.telegramId || item.userId || "");
+    const { telegramId, productId, name, price, quantity, image } = req.body;
     
-    console.log("📥 CART ADD REQUEST:", item);
-    
-    if (!telegramId) {
+    if (!telegramId || !productId) {
       return res.status(400).json({ 
         success: false, 
-        error: "Missing telegramId",
+        error: "Missing telegramId or productId",
         cart: []
       });
     }
 
+    // Создаем пользователя если не существует
     if (!db.users[telegramId]) {
-      return res.status(404).json({ 
-        success: false, 
-        error: "User not found",
-        cart: []
-      });
+      db.users[telegramId] = {
+        telegramId: telegramId,
+        balance: 0,
+        createdAt: new Date().toISOString()
+      };
     }
 
-    db.carts[telegramId] = db.carts[telegramId] || [];
+    // Инициализируем корзину если не существует
+    if (!db.carts[telegramId]) {
+      db.carts[telegramId] = [];
+    }
     
+    // Проверяем есть ли уже товар в корзине
     const existingItemIndex = db.carts[telegramId].findIndex(
-      x => String(x.productId) === String(item.productId)
+      item => item.productId == productId
     );
 
     if (existingItemIndex >= 0) {
-      db.carts[telegramId][existingItemIndex].quantity += item.quantity || 1;
-      console.log("🛒 CART ITEM UPDATED:", {
-        user: telegramId,
-        productId: item.productId,
-        quantity: db.carts[telegramId][existingItemIndex].quantity
-      });
+      // Увеличиваем количество
+      db.carts[telegramId][existingItemIndex].quantity += quantity || 1;
     } else {
-      const newItem = {
-        productId: item.productId,
-        name: item.name || "Unknown Product",
-        price: item.price || 0,
-        quantity: item.quantity || 1,
-        image: item.image || null,
+      // Добавляем новый товар
+      db.carts[telegramId].push({
+        productId: productId,
+        name: name || "Unknown Product",
+        price: price || 0,
+        quantity: quantity || 1,
+        image: image || null,
         addedAt: new Date().toISOString()
-      };
-      db.carts[telegramId].push(newItem);
-      console.log("🛒 NEW CART ITEM ADDED:", {
-        user: telegramId,
-        productId: newItem.productId
       });
     }
 
-    console.log("📊 CART UPDATED:", {
-      user: telegramId,
-      totalItems: db.carts[telegramId].length
-    });
-    
     res.json({
       success: true,
       message: "Товар добавлен в корзину",
@@ -266,12 +234,10 @@ app.post("/cart/add", (req, res) => {
   }
 });
 
-// 3. ОБНОВИТЬ корзину (POST) - для изменения количества
+// 3. ОБНОВИТЬ количество (POST)
 app.post("/cart/update", (req, res) => {
   try {
     const { telegramId, productId, quantity } = req.body;
-    
-    console.log("📥 CART UPDATE REQUEST:", { telegramId, productId, quantity });
     
     if (!telegramId || !productId) {
       return res.status(400).json({ 
@@ -281,18 +247,16 @@ app.post("/cart/update", (req, res) => {
       });
     }
 
-    if (!db.users[telegramId]) {
+    if (!db.carts[telegramId]) {
       return res.status(404).json({ 
         success: false, 
-        error: "User not found",
+        error: "Cart not found",
         cart: []
       });
     }
 
-    db.carts[telegramId] = db.carts[telegramId] || [];
-    
     const itemIndex = db.carts[telegramId].findIndex(
-      item => String(item.productId) === String(productId)
+      item => item.productId == productId
     );
 
     if (itemIndex === -1) {
@@ -303,24 +267,12 @@ app.post("/cart/update", (req, res) => {
       });
     }
 
-    if (quantity === 0) {
-      // Удаляем товар если количество 0
+    // Обновляем количество
+    db.carts[telegramId][itemIndex].quantity += quantity;
+
+    // Если количество стало 0 или меньше, удаляем товар
+    if (db.carts[telegramId][itemIndex].quantity <= 0) {
       db.carts[telegramId].splice(itemIndex, 1);
-      console.log("🗑 ITEM REMOVED (quantity 0):", { user: telegramId, productId });
-    } else {
-      // Обновляем количество
-      db.carts[telegramId][itemIndex].quantity += quantity;
-      console.log("📊 ITEM QUANTITY UPDATED:", {
-        user: telegramId,
-        productId: productId,
-        newQuantity: db.carts[telegramId][itemIndex].quantity
-      });
-      
-      // Если количество стало <= 0, удаляем товар
-      if (db.carts[telegramId][itemIndex].quantity <= 0) {
-        db.carts[telegramId].splice(itemIndex, 1);
-        console.log("🗑 ITEM REMOVED (negative quantity):", { user: telegramId, productId });
-      }
     }
 
     res.json({
@@ -338,12 +290,10 @@ app.post("/cart/update", (req, res) => {
   }
 });
 
-// 4. УДАЛИТЬ из корзины (POST) - полное удаление
+// 4. УДАЛИТЬ товар (POST)
 app.post("/cart/remove", (req, res) => {
   try {
     const { telegramId, productId } = req.body;
-    
-    console.log("📥 CART REMOVE REQUEST:", { telegramId, productId });
     
     if (!telegramId || !productId) {
       return res.status(400).json({ 
@@ -353,28 +303,19 @@ app.post("/cart/remove", (req, res) => {
       });
     }
 
-    if (!db.users[telegramId]) {
+    if (!db.carts[telegramId]) {
       return res.status(404).json({ 
         success: false, 
-        error: "User not found",
+        error: "Cart not found",
         cart: []
       });
     }
 
-    db.carts[telegramId] = db.carts[telegramId] || [];
-    
-    // Удаляем товар из корзины
-    const initialLength = db.carts[telegramId].length;
+    // Удаляем товар
     db.carts[telegramId] = db.carts[telegramId].filter(
-      item => String(item.productId) !== String(productId)
+      item => item.productId != productId
     );
-    
-    console.log("🗑 ITEM REMOVED:", {
-      user: telegramId,
-      productId: productId,
-      removed: initialLength > db.carts[telegramId].length
-    });
-    
+
     res.json({
       success: true,
       cart: db.carts[telegramId]
@@ -395,8 +336,6 @@ app.post("/cart/clear", (req, res) => {
   try {
     const { telegramId } = req.body;
     
-    console.log("📥 CART CLEAR REQUEST for user:", telegramId);
-    
     if (!telegramId) {
       return res.status(400).json({ 
         success: false, 
@@ -405,11 +344,8 @@ app.post("/cart/clear", (req, res) => {
       });
     }
 
-    const cartItemsCount = db.carts[telegramId] ? db.carts[telegramId].length : 0;
     db.carts[telegramId] = [];
-    
-    console.log("✅ CART CLEARED:", { user: telegramId, itemsRemoved: cartItemsCount });
-    
+
     res.json({
       success: true,
       message: "Корзина очищена",
@@ -445,8 +381,8 @@ app.post("/users/:telegramId/balance/add", (req, res) => {
     }
     
     const currentBalance = db.users[telegramId].balance || 0;
-    const newBalance = currentBalance + (parseFloat(amount) || 0);
-    
+    const newBalance = currentBalance + (Number(amount) || 0);
+
     db.users[telegramId].balance = newBalance;
     db.users[telegramId].updatedAt = new Date().toISOString();
 
@@ -516,7 +452,7 @@ app.post("/orders", (req, res) => {
   }
 });
 
-// --- Reviews ---
+// --- Reviews --- (БЕЗ ИЗМЕНЕНИЙ)
 app.post("/reviews", (req, res) => {
   try {
     const reviewData = req.body || {};
