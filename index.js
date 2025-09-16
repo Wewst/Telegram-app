@@ -74,7 +74,9 @@ app.get("/health", (req, res) => {
     status: "ok", 
     message: "Telegram Mini App Backend is running!",
     timestamp: new Date().toISOString(),
-    reviewsCount: db.reviews.length
+    reviewsCount: db.reviews.length,
+    usersCount: Object.keys(db.users).length,
+    cartsCount: Object.keys(db.carts).length
   });
 });
 
@@ -97,7 +99,8 @@ app.post("/users", (req, res) => {
         username: userData.username || existingUser.username,
         firstName: userData.firstName || existingUser.firstName,
         lastName: userData.lastName || existingUser.lastName,
-        avatarUrl: userData.avatarUrl || existingUser.avatarUrl
+        avatarUrl: userData.avatarUrl || existingUser.avatarUrl,
+        updatedAt: new Date().toISOString()
       };
     } else {
       db.users[telegramId] = {
@@ -108,15 +111,16 @@ app.post("/users", (req, res) => {
         lastName: userData.lastName || "",
         avatarUrl: userData.avatarUrl || null,
         joinDate: new Date().toISOString(),
-        balance: userData.balance !== undefined ? userData.balance : 0
+        balance: userData.balance !== undefined ? userData.balance : 0,
+        createdAt: new Date().toISOString()
       };
     }
     
-    console.log("User saved:", db.users[telegramId]);
+    console.log("✅ User saved:", telegramId);
     res.json(db.users[telegramId]);
     
   } catch (error) {
-    console.error("Error saving user:", error);
+    console.error("❌ Error saving user:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -131,15 +135,18 @@ app.get("/users/:telegramId/balance", (req, res) => {
       return res.status(404).json({ error: "User not found", balance: 0 });
     }
 
-    res.json({ balance: user.balance || 0 });
+    res.json({ 
+      success: true,
+      balance: user.balance || 0 
+    });
     
   } catch (error) {
-    console.error("Balance fetch error:", error);
+    console.error("❌ Balance fetch error:", error);
     res.status(500).json({ error: "Internal server error", balance: 0 });
   }
 });
 
-// ===== ОБНОВЛЕННАЯ КОРЗИНА =====
+// ===== УЛУЧШЕННАЯ КОРЗИНА =====
 
 // 1. ПОЛУЧИТЬ корзину (GET)
 app.get("/cart/get", (req, res) => {
@@ -156,9 +163,13 @@ app.get("/cart/get", (req, res) => {
 
     const cartItems = db.carts[telegramId] || [];
     
+    console.log("📦 Cart loaded for user:", telegramId, "items:", cartItems.length);
+    
     res.json({
       success: true,
-      cart: cartItems
+      cart: cartItems,
+      count: cartItems.length,
+      total: cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0)
     });
     
   } catch (error) {
@@ -175,6 +186,8 @@ app.get("/cart/get", (req, res) => {
 app.post("/cart/add", (req, res) => {
   try {
     const { telegramId, productId, name, price, quantity, image } = req.body;
+    
+    console.log("🛒 Add to cart request:", { telegramId, productId });
     
     if (!telegramId || !productId) {
       return res.status(400).json({ 
@@ -206,22 +219,26 @@ app.post("/cart/add", (req, res) => {
     if (existingItemIndex >= 0) {
       // Увеличиваем количество
       db.carts[telegramId][existingItemIndex].quantity += quantity || 1;
+      console.log("📊 Item quantity updated:", db.carts[telegramId][existingItemIndex].quantity);
     } else {
       // Добавляем новый товар
-      db.carts[telegramId].push({
+      const newItem = {
         productId: productId,
         name: name || "Unknown Product",
         price: price || 0,
         quantity: quantity || 1,
         image: image || null,
         addedAt: new Date().toISOString()
-      });
+      };
+      db.carts[telegramId].push(newItem);
+      console.log("🆕 New item added to cart:", newItem);
     }
 
     res.json({
       success: true,
       message: "Товар добавлен в корзину",
-      cart: db.carts[telegramId]
+      cart: db.carts[telegramId],
+      count: db.carts[telegramId].length
     });
     
   } catch (error) {
@@ -238,6 +255,8 @@ app.post("/cart/add", (req, res) => {
 app.post("/cart/update", (req, res) => {
   try {
     const { telegramId, productId, quantity } = req.body;
+    
+    console.log("🔄 Update cart request:", { telegramId, productId, quantity });
     
     if (!telegramId || !productId) {
       return res.status(400).json({ 
@@ -273,11 +292,15 @@ app.post("/cart/update", (req, res) => {
     // Если количество стало 0 или меньше, удаляем товар
     if (db.carts[telegramId][itemIndex].quantity <= 0) {
       db.carts[telegramId].splice(itemIndex, 1);
+      console.log("🗑️ Item removed from cart");
+    } else {
+      console.log("📊 Item quantity updated to:", db.carts[telegramId][itemIndex].quantity);
     }
 
     res.json({
       success: true,
-      cart: db.carts[telegramId]
+      cart: db.carts[telegramId],
+      count: db.carts[telegramId].length
     });
     
   } catch (error) {
@@ -295,6 +318,8 @@ app.post("/cart/remove", (req, res) => {
   try {
     const { telegramId, productId } = req.body;
     
+    console.log("❌ Remove from cart request:", { telegramId, productId });
+    
     if (!telegramId || !productId) {
       return res.status(400).json({ 
         success: false, 
@@ -311,14 +336,20 @@ app.post("/cart/remove", (req, res) => {
       });
     }
 
+    const initialLength = db.carts[telegramId].length;
+    
     // Удаляем товар
     db.carts[telegramId] = db.carts[telegramId].filter(
       item => item.productId != productId
     );
 
+    console.log("🗑️ Item removed, cart size:", initialLength, "->", db.carts[telegramId].length);
+
     res.json({
       success: true,
-      cart: db.carts[telegramId]
+      cart: db.carts[telegramId],
+      count: db.carts[telegramId].length,
+      message: "Товар удален из корзины"
     });
     
   } catch (error) {
@@ -336,6 +367,8 @@ app.post("/cart/clear", (req, res) => {
   try {
     const { telegramId } = req.body;
     
+    console.log("🧹 Clear cart request for user:", telegramId);
+    
     if (!telegramId) {
       return res.status(400).json({ 
         success: false, 
@@ -344,12 +377,17 @@ app.post("/cart/clear", (req, res) => {
       });
     }
 
+    const cartItemsCount = db.carts[telegramId] ? db.carts[telegramId].length : 0;
     db.carts[telegramId] = [];
+    
+    console.log("✅ Cart cleared, removed", cartItemsCount, "items");
 
     res.json({
       success: true,
       message: "Корзина очищена",
-      cart: []
+      cart: [],
+      count: 0,
+      removedItems: cartItemsCount
     });
     
   } catch (error) {
@@ -386,11 +424,11 @@ app.post("/users/:telegramId/balance/add", (req, res) => {
     db.users[telegramId].balance = newBalance;
     db.users[telegramId].updatedAt = new Date().toISOString();
 
-    console.log("💰 BALANCE ADDED:", { telegramId, amount, newBalance });
-    res.json({ newBalance });
+    console.log("💰 Balance added:", { telegramId, amount, newBalance });
+    res.json({ success: true, newBalance });
     
   } catch (error) {
-    console.error("Balance add error:", error);
+    console.error("❌ Balance add error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -414,11 +452,11 @@ app.post("/users/:telegramId/balance/subtract", (req, res) => {
     
     db.users[telegramId].balance -= amount;
     
-    console.log("Balance subtracted:", { user: telegramId, amount, newBalance: db.users[telegramId].balance });
+    console.log("💰 Balance subtracted:", { user: telegramId, amount, newBalance: db.users[telegramId].balance });
     res.json({ success: true, newBalance: db.users[telegramId].balance });
     
   } catch (error) {
-    console.error("Balance subtract error:", error);
+    console.error("❌ Balance subtract error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -443,11 +481,11 @@ app.post("/orders", (req, res) => {
       orderDate: new Date().toISOString()
     };
     
-    console.log("Order created:", { orderId, user: telegramId, total, itemsCount: items ? items.length : 0 });
+    console.log("📦 Order created:", { orderId, user: telegramId, total, itemsCount: items ? items.length : 0 });
     res.json({ success: true, orderId });
     
   } catch (error) {
-    console.error("Order creation error:", error);
+    console.error("❌ Order creation error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -458,21 +496,18 @@ app.post("/reviews", (req, res) => {
     const reviewData = req.body || {};
     const telegramId = String(reviewData.userId || reviewData.telegramId || "");
     
-    console.log("📥 REVIEW POST REQUEST:", reviewData);
+    console.log("📝 Review submission:", { telegramId, textLength: reviewData.text ? reviewData.text.length : 0 });
     
     if (!telegramId) {
-      console.log("❌ Missing user ID");
       return res.status(400).json({ error: "User ID is required" });
     }
     
     if (!reviewData.text || reviewData.text.trim().length < 5) {
-      console.log("❌ Invalid review text");
       return res.status(400).json({ error: "Review text must be at least 5 characters" });
     }
 
     const existingReviewIndex = db.reviews.findIndex(review => review.userId === telegramId);
     if (existingReviewIndex >= 0) {
-      console.log("❌ User already has a review");
       return res.status(400).json({ error: "User has already submitted a review" });
     }
 
@@ -488,8 +523,7 @@ app.post("/reviews", (req, res) => {
     };
 
     db.reviews.unshift(newReview);
-    console.log("📝 NEW REVIEW ADDED:", newReview);
-    console.log("📊 Total reviews now:", db.reviews.length);
+    console.log("✅ New review added, total:", db.reviews.length);
 
     res.json({ success: true, review: newReview });
 
@@ -511,6 +545,7 @@ app.get("/reviews", (req, res) => {
     const paginatedReviews = sortedReviews.slice(startIndex, endIndex);
 
     res.json({
+      success: true,
       reviews: paginatedReviews,
       total: db.reviews.length,
       page,
@@ -528,7 +563,7 @@ app.get("/reviews/user/:telegramId", (req, res) => {
     const telegramId = String(req.params.telegramId);
     
     const userReview = db.reviews.find(review => review.userId === telegramId);
-    res.json({ hasReviewed: !!userReview });
+    res.json({ success: true, hasReviewed: !!userReview });
 
   } catch (error) {
     console.error("❌ USER REVIEW CHECK ERROR:", error);
@@ -539,6 +574,7 @@ app.get("/reviews/user/:telegramId", (req, res) => {
 // --- Debug ---
 app.get("/debug", (req, res) => {
   res.json({
+    success: true,
     usersCount: Object.keys(db.users).length,
     cartsCount: Object.keys(db.carts).length,
     ordersCount: Object.keys(db.orders).length,
@@ -550,14 +586,15 @@ app.get("/debug", (req, res) => {
 
 // --- Start server ---
 app.listen(PORT, () => {
-  console.log(`Backend running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Reviews API: http://localhost:${PORT}/reviews`);
-  console.log(`Cart endpoints:`);
-  console.log(`  GET  /cart/get?telegramId=123`);
-  console.log(`  POST /cart/add`);
-  console.log(`  POST /cart/update`);
-  console.log(`  POST /cart/remove`);
-  console.log(`  POST /cart/clear`);
-  console.log(`Total reviews in DB: ${db.reviews.length}`);
+  console.log(`🚀 Backend running on port ${PORT}`);
+  console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+  console.log(`⭐ Reviews API: http://localhost:${PORT}/reviews`);
+  console.log(`🛒 Cart endpoints:`);
+  console.log(`   GET  /cart/get?telegramId=123`);
+  console.log(`   POST /cart/add`);
+  console.log(`   POST /cart/update`);
+  console.log(`   POST /cart/remove`);
+  console.log(`   POST /cart/clear`);
+  console.log(`📊 Total reviews in DB: ${db.reviews.length}`);
+  console.log(`👥 Total users: ${Object.keys(db.users).length}`);
 });
