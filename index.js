@@ -12,7 +12,8 @@ let db = {
   users: {},
   carts: {},
   orders: {},
-  reviews: []
+  reviews: [],
+  products: {},
 };
 
 // Функции для сохранения/загрузки базы данных
@@ -146,8 +147,6 @@ app.get("/users/:telegramId/balance", (req, res) => {
   }
 });
 
-// ===== УЛУЧШЕННАЯ КОРЗИНА =====
-
 // 1. ПОЛУЧИТЬ корзину (GET)
 app.get("/cart/get", (req, res) => {
   try {
@@ -182,10 +181,10 @@ app.get("/cart/get", (req, res) => {
   }
 });
 
-// 2. ДОБАВИТЬ в корзину (POST)
+// 2. ДОБАВИТЬ в корзину (POST) - ОБНОВЛЕННАЯ ВЕРСИЯ
 app.post("/cart/add", (req, res) => {
   try {
-    const { telegramId, productId, name, price, quantity, image } = req.body;
+    const { telegramId, productId, name, price, quantity, image, title, description, category } = req.body;
     
     console.log("🛒 Add to cart request:", { telegramId, productId });
     
@@ -221,14 +220,18 @@ app.post("/cart/add", (req, res) => {
       db.carts[telegramId][existingItemIndex].quantity += quantity || 1;
       console.log("📊 Item quantity updated:", db.carts[telegramId][existingItemIndex].quantity);
     } else {
-      // Добавляем новый товар
+      // Добавляем новый товар С ПОЛНЫМИ ДАННЫМИ ДЛЯ КАРТОЧКИ
       const newItem = {
         productId: productId,
-        name: name || "Unknown Product",
+        name: name || title || "Unknown Product",
+        title: title || name || "Unknown Product",
         price: price || 0,
         quantity: quantity || 1,
         image: image || null,
-        addedAt: new Date().toISOString()
+        description: description || "",
+        category: category || "",
+        addedAt: new Date().toISOString(),
+        id: productId
       };
       db.carts[telegramId].push(newItem);
       console.log("🆕 New item added to cart:", newItem);
@@ -292,7 +295,7 @@ app.post("/cart/update", (req, res) => {
     // Если количество стало 0 или меньше, удаляем товар
     if (db.carts[telegramId][itemIndex].quantity <= 0) {
       db.carts[telegramId].splice(itemIndex, 1);
-      console.log("🗑️ Item removed from cart");
+      console.log("🗑 Item removed from cart");
     } else {
       console.log("📊 Item quantity updated to:", db.carts[telegramId][itemIndex].quantity);
     }
@@ -343,7 +346,7 @@ app.post("/cart/remove", (req, res) => {
       item => item.productId != productId
     );
 
-    console.log("🗑️ Item removed, cart size:", initialLength, "->", db.carts[telegramId].length);
+    console.log("🗑 Item removed, cart size:", initialLength, "->", db.carts[telegramId].length);
 
     res.json({
       success: true,
@@ -571,6 +574,21 @@ app.get("/reviews/user/:telegramId", (req, res) => {
   }
 });
 
+// --- Products ---
+app.get("/products", (req, res) => {
+  try {
+    const products = Object.values(db.products);
+    res.json({
+      success: true,
+      products: products,
+      count: products.length
+    });
+  } catch (error) {
+    console.error("❌ PRODUCTS FETCH ERROR:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // --- Debug ---
 app.get("/debug", (req, res) => {
   res.json({
@@ -588,7 +606,7 @@ app.get("/debug", (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Backend running on port ${PORT}`);
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
-  console.log(`⭐ Reviews API: http://localhost:${PORT}/reviews`);
+  console.log(`⭐️ Reviews API: http://localhost:${PORT}/reviews`);
   console.log(`🛒 Cart endpoints:`);
   console.log(`   GET  /cart/get?telegramId=123`);
   console.log(`   POST /cart/add`);
