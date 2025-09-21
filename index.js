@@ -571,12 +571,23 @@ app.get("/reviews/user/:telegramId", (req, res) => {
 
 // --- Debug ---
 app.get("/debug", (req, res) => {
+  // Собираем инфу по всем пользователям
+  const usersInfo = Object.values(db.users).map(u => ({
+    telegramId: u.telegramId,
+    username: u.username || null,
+    balance: u.balance || 0
+  }));
+
+  // Логируем в Render все балансы
+  console.log("👥 Users balances snapshot:", usersInfo);
+
   res.json({
     success: true,
     usersCount: Object.keys(db.users).length,
     cartsCount: Object.keys(db.carts).length,
     ordersCount: Object.keys(db.orders).length,
     reviewsCount: db.reviews.length,
+    users: usersInfo, // отдаём список балансов в ответе
     memoryUsage: process.memoryUsage(),
     uptime: process.uptime()
   });
