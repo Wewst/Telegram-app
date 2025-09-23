@@ -12,7 +12,8 @@ let db = {
   users: {},
   carts: {},
   orders: {},
-  reviews: []
+  reviews: [],
+  payments: [] // Новая коллекция для платежей
 };
 
 // Функции для сохранения/загрузки базы данных
@@ -76,7 +77,8 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString(),
     reviewsCount: db.reviews.length,
     usersCount: Object.keys(db.users).length,
-    cartsCount: Object.keys(db.carts).length
+    cartsCount: Object.keys(db.carts).length,
+    paymentsCount: db.payments.length
   });
 });
 
@@ -145,6 +147,260 @@ app.get("/users/:telegramId/balance", (req, res) => {
     res.status(500).json({ error: "Internal server error", balance: 0 });
   }
 });
+
+// ===== НОВАЯ СИСТЕМА ПОПОЛНЕНИЯ ЧЕРЕЗ СБП =====
+
+// 1. Создание запроса на пополнение
+app.post("/payments/create", (req, res) => {
+  try {
+    const { telegramId, amount, bank } = req.body;
+    
+    if (!telegramId || !amount || amount < 10) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Invalid parameters. Minimum amount: 10" 
+      });
+    }
+
+    // Создаем пользователя если не существует
+    if (!db.users[telegramId]) {
+      db.users[telegramId] = {
+        telegramId: telegramId,
+        balance: 0,
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    const paymentId = Date.now().toString();
+    const payment = {
+      id: paymentId,
+      telegramId: telegramId,
+      amount: Number(amount),
+      bank: bank || 'other',
+      status: 'pending', // pending, completed, failed, expired
+      receiverCard: '2200702019610646', // Ваша карта
+      comment: `FollenShaid ID:${telegramId}`, // Комментарий для отслеживания
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 минут
+    };
+
+    db.payments.push(payment);
+    
+    console.log("💰 Payment request created:", { 
+      paymentId, telegramId, amount, bank 
+    });
+
+    res.json({
+      success: true,
+      paymentId: paymentId,
+      payment: payment,
+      message: "Запрос на пополнение создан"
+    });
+
+  } catch (error) {
+    console.error("❌ Payment creation error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 2. Проверка статуса платежа (фронтенд опрашивает этот endpoint)
+app.post("/payments/check", (req, res) => {
+  try {
+    const { telegramId, amount, timestamp } = req.body;
+    
+    if (!telegramId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Missing telegramId",
+        verified: false 
+      });
+    }
+
+    // Ищем платежи пользователя за последние 10 минут
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    
+    const userPayments = db.payments.filter(payment => 
+      payment.telegramId === telegramId && 
+      new Date(payment.createdAt) >= tenMinutesAgo
+    );
+
+    // Проверяем есть ли завершенный платеж с указанной суммой
+    const completedPayment = userPayments.find(payment => 
+      payment.status === 'completed' && 
+      payment.amount === Number(amount)
+    );
+
+    if (completedPayment) {
+      console.log("✅ Payment verified:", { 
+        telegramId, amount, paymentId: completedPayment.id 
+      });
+      
+      // Зачисляем средства на баланс
+      if (db.users[telegramId]) {
+        db.users[telegramId].balance += Number(amount);
+        db.users[telegramId].updatedAt = new Date().toISOString();
+        
+        // Помечаем платеж как обработанный
+        completedPayment.processed = true;
+        completedPayment.processedAt = new Date().toISOString();
+        
+        console.log("💰 Balance updated:", {
+          telegramId, 
+          amount, 
+          newBalance: db.users[telegramId].balance 
+        });
+      }
+
+      return res.json({ 
+        success: true, 
+        verified: true,
+        paymentId: completedPayment.id,
+        newBalance: db.users[telegramId] ? db.users[telegramId].balance : 0
+      });
+    }
+
+    // Проверяем есть ли просроченные платежи
+    const now = new Date();
+    userPayments.forEach(payment => {
+      if (payment.status === 'pending' && new Date(payment.expiresAt) < now) {
+        payment.status = 'expired';
+        console.log("⏰ Payment expired:", payment.id);
+      }
+    });
+
+    res.json({ 
+      success: true, 
+      verified: false,
+      message: "Платеж не найден или еще обрабатывается"
+    });
+
+  } catch (error) {
+    console.error("❌ Payment check error:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: "Internal server error",
+      verified: false 
+    });
+  }
+});
+
+// 3. Ручное подтверждение платежа (для админа или автоматической проверки)
+app.post("/payments/confirm", (req, res) => {
+  try {
+    const { paymentId, amount, receiverCard, comment } = req.body;
+    
+    // Ищем платеж по ID или параметрам
+    let payment;
+    
+    if (paymentId) {
+      payment = db.payments.find(p => p.id === paymentId);
+    } else if (amount && receiverCard) {
+      // Ищем по сумме и карте получателя (для автоматического подтверждения)
+      payment = db.payments.find(p => 
+        p.amount === Number(amount) && 
+        p.receiverCard === receiverCard &&
+        p.status === 'pending'
+      );
+      
+      // Дополнительная проверка по комментарию если есть
+      if (comment && payment) {
+        if (!payment.comment.includes(comment)) {
+          payment = null;
+        }
+      }
+    }
+
+    if (!payment) {
+      return res.status(404).json({ 
+        success: false, 
+        error: "Payment not found" 
+      });
+    }
+
+    if (payment.status !== 'pending') {
+      return res.status(400).json({ 
+        success: false, 
+        error: `Payment already ${payment.status}` 
+      });
+    }
+
+    // Обновляем статус платежа
+    payment.status = 'completed';
+    payment.completedAt = new Date().toISOString();
+    
+    // Зачисляем средства на баланс
+    if (db.users[payment.telegramId]) {
+      db.users[payment.telegramId].balance += payment.amount;
+      db.users[payment.telegramId].updatedAt = new Date().toISOString();
+    }
+
+    console.log("✅ Payment confirmed:", { 
+      paymentId: payment.id, 
+      telegramId: payment.telegramId,
+      amount: payment.amount 
+    });
+
+    res.json({
+      success: true,
+      payment: payment,
+      newBalance: db.users[payment.telegramId] ? db.users[payment.telegramId].balance : 0
+    });
+
+  } catch (error) {
+    console.error("❌ Payment confirmation error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 4. Получить историю платежей пользователя
+app.get("/payments/user/:telegramId", (req, res) => {
+  try {
+    const telegramId = String(req.params.telegramId);
+    const limit = parseInt(req.query.limit) || 10;
+    
+    const userPayments = db.payments
+      .filter(payment => payment.telegramId === telegramId)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, limit);
+
+    res.json({
+      success: true,
+      payments: userPayments,
+      total: db.payments.filter(p => p.telegramId === telegramId).length
+    });
+
+  } catch (error) {
+    console.error("❌ Payments history error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 5. Очистка старых платежей (можно вызывать периодически)
+app.post("/payments/cleanup", (req, res) => {
+  try {
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const initialCount = db.payments.length;
+    
+    db.payments = db.payments.filter(payment => 
+      new Date(payment.createdAt) > dayAgo
+    );
+    
+    const removedCount = initialCount - db.payments.length;
+    console.log("🧹 Payments cleanup completed:", { removed: removedCount, remaining: db.payments.length });
+
+    res.json({
+      success: true,
+      removed: removedCount,
+      remaining: db.payments.length
+    });
+
+  } catch (error) {
+    console.error("❌ Payments cleanup error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ===== СТАРЫЕ ФУНКЦИИ (остаются без изменений) =====
 
 // 1. ПОЛУЧИТЬ корзину (GET)
 app.get("/cart/get", (req, res) => {
@@ -290,7 +546,7 @@ app.post("/cart/update", (req, res) => {
     // Если количество стало 0 или меньше, удаляем товар
     if (db.carts[telegramId][itemIndex].quantity <= 0) {
       db.carts[telegramId].splice(itemIndex, 1);
-      console.log("🗑️ Item removed from cart");
+      console.log("🗑 Item removed from cart");
     } else {
       console.log("📊 Item quantity updated to:", db.carts[telegramId][itemIndex].quantity);
     }
@@ -341,7 +597,7 @@ app.post("/cart/remove", (req, res) => {
       item => item.productId != productId
     );
 
-    console.log("🗑️ Item removed, cart size:", initialLength, "->", db.carts[telegramId].length);
+    console.log("🗑 Item removed, cart size:", initialLength, "->", db.carts[telegramId].length);
 
     res.json({
       success: true,
@@ -398,7 +654,7 @@ app.post("/cart/clear", (req, res) => {
   }
 });
 
-// --- Balance operations ---
+// --- Balance operations (старые методы для совместимости) ---
 app.post("/users/:telegramId/balance/add", (req, res) => {
   try {
     const telegramId = String(req.params.telegramId);
@@ -577,6 +833,7 @@ app.get("/debug", (req, res) => {
     cartsCount: Object.keys(db.carts).length,
     ordersCount: Object.keys(db.orders).length,
     reviewsCount: db.reviews.length,
+    paymentsCount: db.payments.length,
     memoryUsage: process.memoryUsage(),
     uptime: process.uptime()
   });
@@ -586,13 +843,14 @@ app.get("/debug", (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Backend running on port ${PORT}`);
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
-  console.log(`⭐ Reviews API: http://localhost:${PORT}/reviews`);
-  console.log(`🛒 Cart endpoints:`);
-  console.log(`   GET  /cart/get?telegramId=123`);
-  console.log(`   POST /cart/add`);
-  console.log(`   POST /cart/update`);
-  console.log(`   POST /cart/remove`);
-  console.log(`   POST /cart/clear`);
+  console.log(`💰 New Payment endpoints:`);
+  console.log(`   POST /payments/create - Создать запрос на пополнение`);
+  console.log(`   POST /payments/check - Проверить статус платежа`);
+  console.log(`   POST /payments/confirm - Подтвердить платеж (админ)`);
+  console.log(`   GET  /payments/user/:id - История платежей`);
+  console.log(`⭐️ Reviews API: http://localhost:${PORT}/reviews`);
+  console.log(`🛒 Cart endpoints available`);
   console.log(`📊 Total reviews in DB: ${db.reviews.length}`);
   console.log(`👥 Total users: ${Object.keys(db.users).length}`);
+  console.log(`💳 Total payments: ${db.payments.length}`);
 });
