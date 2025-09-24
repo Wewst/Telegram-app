@@ -4,6 +4,9 @@ const helmet = require("helmet");
 const fs = require("fs");
 const path = require("path");
 
+// если node < 18, то раскомментируй:
+// const fetch = require("node-fetch");
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -13,13 +16,13 @@ let db = {
   carts: {},
   orders: {},
   reviews: [],
-  payments: [] // Новая коллекция для платежей
+  payments: []
 };
 
-// Функции для сохранения/загрузки базы данных
+// ===== DB SAVE/LOAD =====
 function saveDB() {
   try {
-    fs.writeFileSync('db_backup.json', JSON.stringify(db, null, 2));
+    fs.writeFileSync("db_backup.json", JSON.stringify(db, null, 2));
     console.log("💾 Database backup saved");
   } catch (error) {
     console.error("❌ Error saving database:", error);
@@ -28,23 +31,20 @@ function saveDB() {
 
 function loadDB() {
   try {
-    if (fs.existsSync('db_backup.json')) {
-      const data = fs.readFileSync('db_backup.json', 'utf8');
+    if (fs.existsSync("db_backup.json")) {
+      const data = fs.readFileSync("db_backup.json", "utf8");
       db = JSON.parse(data);
       console.log("💾 Database loaded from backup");
     }
-  } catch (error) {
+  } catch {
     console.log("ℹ️ No existing DB found, starting fresh");
   }
 }
 
-// Загружаем базу при старте
 loadDB();
-
-// Автосохранение каждые 30 секунд
 setInterval(saveDB, 30000);
 
-// ===== ПРАВИЛЬНЫЕ CORS НАСТРОЙКИ =====
+// ===== MIDDLEWARE =====
 app.use(cors({
   origin: "*",
   methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
@@ -53,26 +53,23 @@ app.use(cors({
   preflightContinue: false,
   optionsSuccessStatus: 204
 }));
-
-app.options('*', cors());
+app.options("*", cors());
 app.use(helmet());
 app.use(express.json({ limit: "2mb" }));
 
 // Простое логирование
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
-  
-  if (['POST', 'PUT'].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
-    console.log('Request body:', JSON.stringify(req.body));
+  if (["POST", "PUT"].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
+    console.log("Request body:", JSON.stringify(req.body));
   }
-  
   next();
 });
 
 // --- Health check ---
 app.get("/health", (req, res) => {
-  res.json({ 
-    status: "ok", 
+  res.json({
+    status: "ok",
     message: "Telegram Mini App Backend is running!",
     timestamp: new Date().toISOString(),
     reviewsCount: db.reviews.length,
@@ -82,18 +79,14 @@ app.get("/health", (req, res) => {
   });
 });
 
-// --- Users ---
+// ===== USERS =====
 app.post("/users", (req, res) => {
   try {
     const userData = req.body || {};
     const telegramId = String(userData.telegramId || userData.id || "");
-    
-    if (!telegramId) {
-      return res.status(400).json({ error: "Missing telegramId" });
-    }
+    if (!telegramId) return res.status(400).json({ error: "Missing telegramId" });
 
     const existingUser = db.users[telegramId];
-    
     if (existingUser) {
       db.users[telegramId] = {
         ...existingUser,
@@ -107,7 +100,7 @@ app.post("/users", (req, res) => {
     } else {
       db.users[telegramId] = {
         id: telegramId,
-        telegramId: telegramId,
+        telegramId,
         username: userData.username || "",
         firstName: userData.firstName || "",
         lastName: userData.lastName || "",
@@ -117,286 +110,102 @@ app.post("/users", (req, res) => {
         createdAt: new Date().toISOString()
       };
     }
-    
     console.log("✅ User saved:", telegramId);
     res.json(db.users[telegramId]);
-    
-  } catch (error) {
-    console.error("❌ Error saving user:", error);
+  } catch (e) {
+    console.error("❌ Error saving user:", e);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Получить баланс пользователя
+// Баланс
 app.get("/users/:telegramId/balance", (req, res) => {
-  try {
-    const telegramId = String(req.params.telegramId);
-    const user = db.users[telegramId];
-    
-    if (!user) {
-      return res.status(404).json({ error: "User not found", balance: 0 });
-    }
-
-    res.json({ 
-      success: true,
-      balance: user.balance || 0 
-    });
-    
-  } catch (error) {
-    console.error("❌ Balance fetch error:", error);
-    res.status(500).json({ error: "Internal server error", balance: 0 });
-  }
+  const user = db.users[req.params.telegramId];
+  if (!user) return res.status(404).json({ error: "User not found", balance: 0 });
+  res.json({ success: true, balance: user.balance || 0 });
 });
 
 // ===== НОВАЯ СИСТЕМА ПОПОЛНЕНИЯ ЧЕРЕЗ СБП =====
 
-// 1. Создание запроса на пополнение
-app.post("/payments/create", (req, res) => {
+// ===== PAYMENTS через Tinkoff =====
+app.post("/payments/create", async (req, res) => {
   try {
-    const { telegramId, amount, bank } = req.body;
-    
+    const { telegramId, amount } = req.body;
     if (!telegramId || !amount || amount < 10) {
-      return res.status(400).json({ 
-        success: false, 
-        error: "Invalid parameters. Minimum amount: 10" 
-      });
+      return res.status(400).json({ success: false, error: "Invalid parameters. Minimum amount: 10" });
     }
 
-    // Создаем пользователя если не существует
     if (!db.users[telegramId]) {
-      db.users[telegramId] = {
-        telegramId: telegramId,
-        balance: 0,
-        createdAt: new Date().toISOString()
-      };
+      db.users[telegramId] = { telegramId, balance: 0, createdAt: new Date().toISOString() };
     }
 
-    const paymentId = Date.now().toString();
-    const payment = {
-      id: paymentId,
-      telegramId: telegramId,
-      amount: Number(amount),
-      bank: bank || 'other',
-      status: 'pending', // pending, completed, failed, expired
-      receiverCard: '2200702019610646', // Ваша карта
-      comment: `FollenShaid ID:${telegramId}`, // Комментарий для отслеживания
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 минут
+    const orderId = Date.now().toString();
+    const initData = {
+      TerminalKey: process.env.TERMINAL_KEY,
+      Amount: amount * 100, // копейки
+      OrderId: orderId,
+      Description: `Пополнение баланса для ${telegramId}`,
+      SuccessURL: "https://your-frontend-url.ru/payment-success",
+      FailURL: "https://your-frontend-url.ru/payment-fail"
     };
 
+    const tinkoffResp = await fetch("https://securepay.tinkoff.ru/v2/Init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(initData)
+    });
+    const tinkoffJson = await tinkoffResp.json();
+
+    if (!tinkoffJson.Success) {
+      console.error("❌ Tinkoff Init error:", tinkoffJson);
+      return res.status(500).json({ success: false, error: "Tinkoff Init failed", details: tinkoffJson });
+    }
+
+    const payment = {
+      id: orderId,
+      telegramId,
+      amount,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      paymentUrl: tinkoffJson.PaymentURL
+    };
     db.payments.push(payment);
-    
-    console.log("💰 Payment request created:", { 
-      paymentId, telegramId, amount, bank 
-    });
 
-    res.json({
-      success: true,
-      paymentId: paymentId,
-      payment: payment,
-      message: "Запрос на пополнение создан"
-    });
-
-  } catch (error) {
-    console.error("❌ Payment creation error:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.log("💰 Tinkoff payment created:", payment);
+    res.json({ success: true, paymentId: orderId, paymentUrl: tinkoffJson.PaymentURL });
+  } catch (e) {
+    console.error("❌ Payment creation error:", e);
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
-// 2. Проверка статуса платежа (фронтенд опрашивает этот endpoint)
-app.post("/payments/check", (req, res) => {
+// Callback от Tinkoff
+app.post("/payments/callback", (req, res) => {
   try {
-    const { telegramId, amount, timestamp } = req.body;
-    
-    if (!telegramId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: "Missing telegramId",
-        verified: false 
-      });
-    }
+    const { OrderId, Status, Amount } = req.body;
+    console.log("📩 Tinkoff callback:", req.body);
 
-    // Ищем платежи пользователя за последние 10 минут
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-    
-    const userPayments = db.payments.filter(payment => 
-      payment.telegramId === telegramId && 
-      new Date(payment.createdAt) >= tenMinutesAgo
-    );
+    const payment = db.payments.find(p => p.id === OrderId);
+    if (!payment) return res.status(404).json({ success: false, error: "Payment not found" });
 
-    // Проверяем есть ли завершенный платеж с указанной суммой
-    const completedPayment = userPayments.find(payment => 
-      payment.status === 'completed' && 
-      payment.amount === Number(amount)
-    );
+    if (Status === "CONFIRMED") {
+      payment.status = "completed";
+      payment.completedAt = new Date().toISOString();
 
-    if (completedPayment) {
-      console.log("✅ Payment verified:", { 
-        telegramId, amount, paymentId: completedPayment.id 
-      });
-      
-      // Зачисляем средства на баланс
-      if (db.users[telegramId]) {
-        db.users[telegramId].balance += Number(amount);
-        db.users[telegramId].updatedAt = new Date().toISOString();
-        
-        // Помечаем платеж как обработанный
-        completedPayment.processed = true;
-        completedPayment.processedAt = new Date().toISOString();
-        
-        console.log("💰 Balance updated:", {
-          telegramId, 
-          amount, 
-          newBalance: db.users[telegramId].balance 
-        });
+      if (db.users[payment.telegramId]) {
+        db.users[payment.telegramId].balance += Amount / 100; // обратно в рубли
+        db.users[payment.telegramId].updatedAt = new Date().toISOString();
       }
 
-      return res.json({ 
-        success: true, 
-        verified: true,
-        paymentId: completedPayment.id,
-        newBalance: db.users[telegramId] ? db.users[telegramId].balance : 0
-      });
+      console.log("✅ Payment confirmed:", payment);
+    } else if (Status === "REJECTED") {
+      payment.status = "failed";
     }
 
-    // Проверяем есть ли просроченные платежи
-    const now = new Date();
-    userPayments.forEach(payment => {
-      if (payment.status === 'pending' && new Date(payment.expiresAt) < now) {
-        payment.status = 'expired';
-        console.log("⏰ Payment expired:", payment.id);
-      }
-    });
-
-    res.json({ 
-      success: true, 
-      verified: false,
-      message: "Платеж не найден или еще обрабатывается"
-    });
-
-  } catch (error) {
-    console.error("❌ Payment check error:", error);
-    res.status(500).json({ 
-      success: false, 
-      error: "Internal server error",
-      verified: false 
-    });
-  }
-});
-
-// 3. Ручное подтверждение платежа (для админа или автоматической проверки)
-app.post("/payments/confirm", (req, res) => {
-  try {
-    const { paymentId, amount, receiverCard, comment } = req.body;
-    
-    // Ищем платеж по ID или параметрам
-    let payment;
-    
-    if (paymentId) {
-      payment = db.payments.find(p => p.id === paymentId);
-    } else if (amount && receiverCard) {
-      // Ищем по сумме и карте получателя (для автоматического подтверждения)
-      payment = db.payments.find(p => 
-        p.amount === Number(amount) && 
-        p.receiverCard === receiverCard &&
-        p.status === 'pending'
-      );
-      
-      // Дополнительная проверка по комментарию если есть
-      if (comment && payment) {
-        if (!payment.comment.includes(comment)) {
-          payment = null;
-        }
-      }
-    }
-
-    if (!payment) {
-      return res.status(404).json({ 
-        success: false, 
-        error: "Payment not found" 
-      });
-    }
-
-    if (payment.status !== 'pending') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `Payment already ${payment.status}` 
-      });
-    }
-
-    // Обновляем статус платежа
-    payment.status = 'completed';
-    payment.completedAt = new Date().toISOString();
-    
-    // Зачисляем средства на баланс
-    if (db.users[payment.telegramId]) {
-      db.users[payment.telegramId].balance += payment.amount;
-      db.users[payment.telegramId].updatedAt = new Date().toISOString();
-    }
-
-    console.log("✅ Payment confirmed:", { 
-      paymentId: payment.id, 
-      telegramId: payment.telegramId,
-      amount: payment.amount 
-    });
-
-    res.json({
-      success: true,
-      payment: payment,
-      newBalance: db.users[payment.telegramId] ? db.users[payment.telegramId].balance : 0
-    });
-
-  } catch (error) {
-    console.error("❌ Payment confirmation error:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// 4. Получить историю платежей пользователя
-app.get("/payments/user/:telegramId", (req, res) => {
-  try {
-    const telegramId = String(req.params.telegramId);
-    const limit = parseInt(req.query.limit) || 10;
-    
-    const userPayments = db.payments
-      .filter(payment => payment.telegramId === telegramId)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, limit);
-
-    res.json({
-      success: true,
-      payments: userPayments,
-      total: db.payments.filter(p => p.telegramId === telegramId).length
-    });
-
-  } catch (error) {
-    console.error("❌ Payments history error:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// 5. Очистка старых платежей (можно вызывать периодически)
-app.post("/payments/cleanup", (req, res) => {
-  try {
-    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const initialCount = db.payments.length;
-    
-    db.payments = db.payments.filter(payment => 
-      new Date(payment.createdAt) > dayAgo
-    );
-    
-    const removedCount = initialCount - db.payments.length;
-    console.log("🧹 Payments cleanup completed:", { removed: removedCount, remaining: db.payments.length });
-
-    res.json({
-      success: true,
-      removed: removedCount,
-      remaining: db.payments.length
-    });
-
-  } catch (error) {
-    console.error("❌ Payments cleanup error:", error);
-    res.status(500).json({ error: "Internal server error" });
+    res.json({ success: true });
+  } catch (e) {
+    console.error("❌ Callback error:", e);
+    res.status(500).json({ success: false });
   }
 });
 
@@ -852,5 +661,5 @@ app.listen(PORT, () => {
   console.log(`🛒 Cart endpoints available`);
   console.log(`📊 Total reviews in DB: ${db.reviews.length}`);
   console.log(`👥 Total users: ${Object.keys(db.users).length}`);
-  console.log(`💳 Total payments: ${db.payments.length}`);
+  console.log(`💳 Payments: POST /payments/create, POST /payments/callback`);
 });
