@@ -248,19 +248,19 @@ app.get("/cart/get", (req, res) => {
 // 2. ДОБАВИТЬ в корзину (POST)
 app.post("/cart/add", (req, res) => {
   try {
-    const { telegramId, productId, name, price, quantity, image } = req.body;
-    
-    console.log("🛒 Add to cart request:", { telegramId, productId });
-    
+    const { telegramId, productId, name, price, quantity, image, description } = req.body;
+
+    console.log("🛒 Add to cart request:", { telegramId, productId, name, description });
+
     if (!telegramId || !productId) {
-      return res.status(400).json({ 
-        success: false, 
+      return res.status(400).json({
+        success: false,
         error: "Missing telegramId or productId",
         cart: []
       });
     }
 
-    // Создаем пользователя если не существует
+    // Создаем пользователя, если не существует
     if (!db.users[telegramId]) {
       db.users[telegramId] = {
         telegramId: telegramId,
@@ -269,12 +269,12 @@ app.post("/cart/add", (req, res) => {
       };
     }
 
-    // Инициализируем корзину если не существует
+    // Инициализируем корзину, если не существует
     if (!db.carts[telegramId]) {
       db.carts[telegramId] = [];
     }
-    
-    // Проверяем есть ли уже товар в корзине
+
+    // Проверяем, есть ли уже товар в корзине
     const existingItemIndex = db.carts[telegramId].findIndex(
       item => item.productId == productId
     );
@@ -291,8 +291,10 @@ app.post("/cart/add", (req, res) => {
         price: price || 0,
         quantity: quantity || 1,
         image: image || null,
+        description: description || "", // ✅ теперь сохраняем описание
         addedAt: new Date().toISOString()
       };
+
       db.carts[telegramId].push(newItem);
       console.log("🆕 New item added to cart:", newItem);
     }
@@ -303,17 +305,16 @@ app.post("/cart/add", (req, res) => {
       cart: db.carts[telegramId],
       count: db.carts[telegramId].length
     });
-    
+
   } catch (error) {
     console.error("❌ CART ADD ERROR:", error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: "Internal server error",
       cart: []
     });
   }
 });
-
 // 3. ОБНОВИТЬ количество (POST)
 app.post("/cart/update", (req, res) => {
   try {
