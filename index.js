@@ -4,9 +4,6 @@ const helmet = require("helmet");
 const fs = require("fs");
 const path = require("path");
 
-// если node < 18, то раскомментируй:
-// const fetch = require("node-fetch");
-
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -95,6 +92,7 @@ app.post("/users", (req, res) => {
         firstName: userData.firstName || existingUser.firstName,
         lastName: userData.lastName || existingUser.lastName,
         avatarUrl: userData.avatarUrl || existingUser.avatarUrl,
+        level: userData.level || existingUser.level || "Юнга", // Добавили уровень, дефолт "Юнга"
         updatedAt: new Date().toISOString()
       };
     } else {
@@ -107,6 +105,7 @@ app.post("/users", (req, res) => {
         avatarUrl: userData.avatarUrl || null,
         joinDate: new Date().toISOString(),
         balance: userData.balance !== undefined ? userData.balance : 0,
+        level: "Юнга", // Дефолтный уровень
         createdAt: new Date().toISOString()
       };
     }
@@ -123,6 +122,50 @@ app.get("/users/:telegramId/balance", (req, res) => {
   const user = db.users[req.params.telegramId];
   if (!user) return res.status(404).json({ error: "User not found", balance: 0 });
   res.json({ success: true, balance: user.balance || 0 });
+});
+
+// НОВЫЙ: Получить пользователя (с уровнем)
+app.get("/users/:telegramId", (req, res) => {
+  try {
+    const user = db.users[req.params.telegramId] || {};
+    res.json({
+      success: true,
+      ...user,
+      level: user.level || "Юнга" // Дефолт "Юнга"
+    });
+  } catch (error) {
+    console.error("❌ Error getting user:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
+
+// НОВЫЙ: Обновить уровень пользователя
+app.post("/users/:telegramId/update-level", (req, res) => {
+  try {
+    const telegramId = req.params.telegramId;
+    const { level } = req.body;
+
+    if (!level) {
+      return res.status(400).json({ success: false, error: "Missing level" });
+    }
+
+    if (!db.users[telegramId]) {
+      db.users[telegramId] = {
+        telegramId,
+        level,
+        createdAt: new Date().toISOString()
+      };
+    } else {
+      db.users[telegramId].level = level;
+      db.users[telegramId].updatedAt = new Date().toISOString();
+    }
+
+    console.log(`🏆 Уровень "${level}" сохранён для пользователя ${telegramId}`);
+    res.json({ success: true, level });
+  } catch (error) {
+    console.error("❌ Error updating level:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
 });
 
 // ===== НОВАЯ СИСТЕМА ПОПОЛНЕНИЯ ЧЕРЕЗ СБП =====
@@ -142,7 +185,7 @@ app.post("/payments/create", async (req, res) => {
     const orderId = Date.now().toString();
     const initData = {
       TerminalKey: process.env.TERMINAL_KEY,
-      Amount: amount * 100, // копейки
+      Amount: amount * 100,
       OrderId: orderId,
       Description: `Пополнение баланса для ${telegramId}`,
       SuccessURL: "https://your-frontend-url.ru/payment-success",
@@ -193,7 +236,7 @@ app.post("/payments/callback", (req, res) => {
       payment.completedAt = new Date().toISOString();
 
       if (db.users[payment.telegramId]) {
-        db.users[payment.telegramId].balance += Amount / 100; // обратно в рубли
+        db.users[payment.telegramId].balance += Amount / 100;
         db.users[payment.telegramId].updatedAt = new Date().toISOString();
       }
 
@@ -281,7 +324,7 @@ app.post("/cart/add", (req, res) => {
         price: price || 0,
         quantity: quantity || 1,
         image: image || null,
-        description: description || "", // ✅ добавили описание
+        description: description || "",
         category: category || "",
         addedAt: new Date().toISOString()
       };
@@ -303,6 +346,7 @@ app.post("/cart/add", (req, res) => {
     });
   }
 });
+
 // 3. ОБНОВИТЬ количество (POST)
 app.post("/cart/update", (req, res) => {
   try {
@@ -338,10 +382,8 @@ app.post("/cart/update", (req, res) => {
       });
     }
 
-    // Обновляем количество
     db.carts[telegramId][itemIndex].quantity += quantity;
 
-    // Если количество стало 0 или меньше, удаляем товар
     if (db.carts[telegramId][itemIndex].quantity <= 0) {
       db.carts[telegramId].splice(itemIndex, 1);
       console.log("🗑 Item removed from cart");
@@ -390,7 +432,6 @@ app.post("/cart/remove", (req, res) => {
 
     const initialLength = db.carts[telegramId].length;
     
-    // Удаляем товар
     db.carts[telegramId] = db.carts[telegramId].filter(
       item => item.productId != productId
     );
@@ -651,4 +692,5 @@ app.listen(PORT, () => {
   console.log(`📊 Total reviews in DB: ${db.reviews.length}`);
   console.log(`👥 Total users: ${Object.keys(db.users).length}`);
   console.log(`💳 Payments: POST /payments/create, POST /payments/callback`);
+  console.log(`🏆 Levels support added: GET /users/:id, POST /users/:id/update-level`);
 });
