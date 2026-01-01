@@ -92,7 +92,7 @@ app.post("/users", (req, res) => {
         firstName: userData.firstName || existingUser.firstName,
         lastName: userData.lastName || existingUser.lastName,
         avatarUrl: userData.avatarUrl || existingUser.avatarUrl,
-        level: userData.level || existingUser.level || "Юнга", // Добавили уровень, дефолт "Юнга"
+        level: userData.level || existingUser.level || "Юнга", // Добавлено: уровень, дефолт "Юнга"
         updatedAt: new Date().toISOString()
       };
     } else {
@@ -105,7 +105,7 @@ app.post("/users", (req, res) => {
         avatarUrl: userData.avatarUrl || null,
         joinDate: new Date().toISOString(),
         balance: userData.balance !== undefined ? userData.balance : 0,
-        level: "Юнга", // Дефолтный уровень
+        level: "Юнга", // Дефолт для новых пользователей
         createdAt: new Date().toISOString()
       };
     }
@@ -124,14 +124,14 @@ app.get("/users/:telegramId/balance", (req, res) => {
   res.json({ success: true, balance: user.balance || 0 });
 });
 
-// НОВЫЙ: Получить пользователя (с уровнем)
+// НОВЫЙ РОУТ: Получить пользователя с уровнем
 app.get("/users/:telegramId", (req, res) => {
   try {
     const user = db.users[req.params.telegramId] || {};
     res.json({
       success: true,
       ...user,
-      level: user.level || "Юнга" // Дефолт "Юнга"
+      level: user.level || "Юнга"
     });
   } catch (error) {
     console.error("❌ Error getting user:", error);
@@ -139,16 +139,16 @@ app.get("/users/:telegramId", (req, res) => {
   }
 });
 
-// НОВЫЙ: Обновить уровень пользователя
+// НОВЫЙ РОУТ: Обновить уровень
 app.post("/users/:telegramId/update-level", (req, res) => {
   try {
     const telegramId = req.params.telegramId;
     const { level } = req.body;
-
+    
     if (!level) {
       return res.status(400).json({ success: false, error: "Missing level" });
     }
-
+    
     if (!db.users[telegramId]) {
       db.users[telegramId] = {
         telegramId,
@@ -159,7 +159,7 @@ app.post("/users/:telegramId/update-level", (req, res) => {
       db.users[telegramId].level = level;
       db.users[telegramId].updatedAt = new Date().toISOString();
     }
-
+    
     console.log(`🏆 Уровень "${level}" сохранён для пользователя ${telegramId}`);
     res.json({ success: true, level });
   } catch (error) {
@@ -167,8 +167,6 @@ app.post("/users/:telegramId/update-level", (req, res) => {
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
-
-// ===== НОВАЯ СИСТЕМА ПОПОЛНЕНИЯ ЧЕРЕЗ СБП =====
 
 // ===== PAYMENTS через Tinkoff =====
 app.post("/payments/create", async (req, res) => {
