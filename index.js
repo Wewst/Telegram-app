@@ -4,6 +4,9 @@ const helmet = require("helmet");
 const fs = require("fs");
 const path = require("path");
 
+// если node < 18, то раскомментируй:
+// const fetch = require("node-fetch");
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -83,6 +86,8 @@ app.post("/users", (req, res) => {
     const telegramId = String(userData.telegramId || userData.id || "");
     if (!telegramId) return res.status(400).json({ error: "Missing telegramId" });
 
+    console.log("📝 Сохранение пользователя:", telegramId, "data:", userData);
+
     const existingUser = db.users[telegramId];
     if (existingUser) {
       db.users[telegramId] = {
@@ -92,7 +97,7 @@ app.post("/users", (req, res) => {
         firstName: userData.firstName || existingUser.firstName,
         lastName: userData.lastName || existingUser.lastName,
         avatarUrl: userData.avatarUrl || existingUser.avatarUrl,
-        level: userData.level || existingUser.level || "Юнга", // Добавлено: уровень, дефолт "Юнга"
+        level: userData.level || existingUser.level || "Юнга",
         updatedAt: new Date().toISOString()
       };
     } else {
@@ -105,11 +110,11 @@ app.post("/users", (req, res) => {
         avatarUrl: userData.avatarUrl || null,
         joinDate: new Date().toISOString(),
         balance: userData.balance !== undefined ? userData.balance : 0,
-        level: "Юнга", // Дефолт для новых пользователей
+        level: "Юнга",
         createdAt: new Date().toISOString()
       };
     }
-    console.log("✅ User saved:", telegramId);
+    console.log("✅ User saved:", telegramId, "level:", db.users[telegramId].level);
     res.json(db.users[telegramId]);
   } catch (e) {
     console.error("❌ Error saving user:", e);
@@ -124,28 +129,35 @@ app.get("/users/:telegramId/balance", (req, res) => {
   res.json({ success: true, balance: user.balance || 0 });
 });
 
-// НОВЫЙ РОУТ: Получить пользователя с уровнем
+// Получить пользователя (с уровнем)
 app.get("/users/:telegramId", (req, res) => {
   try {
-    const user = db.users[req.params.telegramId] || {};
+    const telegramId = req.params.telegramId;
+    console.log("📥 Запрос пользователя:", telegramId);
+    
+    const user = db.users[telegramId] || {};
     res.json({
       success: true,
       ...user,
       level: user.level || "Юнга"
     });
+    console.log("✅ Отправлен пользователь:", telegramId, "level:", user.level || "Юнга");
   } catch (error) {
     console.error("❌ Error getting user:", error);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
-// НОВЫЙ РОУТ: Обновить уровень
+// Обновить уровень
 app.post("/users/:telegramId/update-level", (req, res) => {
   try {
     const telegramId = req.params.telegramId;
     const { level } = req.body;
     
+    console.log("🏆 Запрос на обновление уровня:", telegramId, "level:", level);
+    
     if (!level) {
+      console.error("❌ Missing level in request");
       return res.status(400).json({ success: false, error: "Missing level" });
     }
     
@@ -155,18 +167,21 @@ app.post("/users/:telegramId/update-level", (req, res) => {
         level,
         createdAt: new Date().toISOString()
       };
+      console.log("✅ Создан новый пользователь с уровнем:", level);
     } else {
       db.users[telegramId].level = level;
       db.users[telegramId].updatedAt = new Date().toISOString();
+      console.log("✅ Обновлён уровень:", level);
     }
     
-    console.log(`🏆 Уровень "${level}" сохранён для пользователя ${telegramId}`);
     res.json({ success: true, level });
   } catch (error) {
     console.error("❌ Error updating level:", error);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
+
+// ===== НОВАЯ СИСТЕМА ПОПОЛНЕНИЯ ЧЕРЕЗ СБП =====
 
 // ===== PAYMENTS через Tinkoff =====
 app.post("/payments/create", async (req, res) => {
@@ -183,7 +198,7 @@ app.post("/payments/create", async (req, res) => {
     const orderId = Date.now().toString();
     const initData = {
       TerminalKey: process.env.TERMINAL_KEY,
-      Amount: amount * 100,
+      Amount: amount * 100, // копейки
       OrderId: orderId,
       Description: `Пополнение баланса для ${telegramId}`,
       SuccessURL: "https://your-frontend-url.ru/payment-success",
@@ -682,13 +697,10 @@ app.listen(PORT, () => {
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
   console.log(`💰 New Payment endpoints:`);
   console.log(`   POST /payments/create - Создать запрос на пополнение`);
-  console.log(`   POST /payments/check - Проверить статус платежа`);
-  console.log(`   POST /payments/confirm - Подтвердить платеж (админ)`);
-  console.log(`   GET  /payments/user/:id - История платежей`);
+  console.log(`   POST /payments/callback - Callback от Tinkoff`);
   console.log(`⭐️ Reviews API: http://localhost:${PORT}/reviews`);
   console.log(`🛒 Cart endpoints available`);
   console.log(`📊 Total reviews in DB: ${db.reviews.length}`);
   console.log(`👥 Total users: ${Object.keys(db.users).length}`);
-  console.log(`💳 Payments: POST /payments/create, POST /payments/callback`);
-  console.log(`🏆 Levels support added: GET /users/:id, POST /users/:id/update-level`);
+  console.log(`🏆 Levels support: GET /users/:id, POST /users/:id/update-level`);
 });
