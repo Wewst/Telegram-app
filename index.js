@@ -4,9 +4,6 @@ const helmet = require("helmet");
 const fs = require("fs");
 const path = require("path");
 
-// если node < 18, то раскомментируй:
-// const fetch = require("node-fetch");
-
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -180,8 +177,6 @@ app.post("/users/:telegramId/update-level", (req, res) => {
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
-
-// ===== НОВАЯ СИСТЕМА ПОПОЛНЕНИЯ ЧЕРЕЗ СБП =====
 
 // ===== PAYMENTS через Tinkoff =====
 app.post("/payments/create", async (req, res) => {
@@ -702,5 +697,6 @@ app.listen(PORT, () => {
   console.log(`🛒 Cart endpoints available`);
   console.log(`📊 Total reviews in DB: ${db.reviews.length}`);
   console.log(`👥 Total users: ${Object.keys(db.users).length}`);
-  console.log(`🏆 Levels support: GET /users/:id, POST /users/:id/update-level`);
+  console.log(`💳 Payments: POST /payments/create, POST /payments/callback`);
+  console.log(`🏆 Levels support added: GET /users/:id, POST /users/:id/update-level`);
 });
