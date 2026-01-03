@@ -4,6 +4,9 @@ const helmet = require("helmet");
 const fs = require("fs");
 const path = require("path");
 
+// если node < 18, то раскомментируй:
+// const fetch = require("node-fetch");
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -83,8 +86,6 @@ app.post("/users", (req, res) => {
     const telegramId = String(userData.telegramId || userData.id || "");
     if (!telegramId) return res.status(400).json({ error: "Missing telegramId" });
 
-    console.log("📝 Сохранение пользователя:", telegramId, "data:", userData);
-
     const existingUser = db.users[telegramId];
     if (existingUser) {
       db.users[telegramId] = {
@@ -94,7 +95,7 @@ app.post("/users", (req, res) => {
         firstName: userData.firstName || existingUser.firstName,
         lastName: userData.lastName || existingUser.lastName,
         avatarUrl: userData.avatarUrl || existingUser.avatarUrl,
-        level: userData.level || existingUser.level || "Юнга",
+        level: userData.level || existingUser.level || "Юнга", // уровень с дефолтом
         updatedAt: new Date().toISOString()
       };
     } else {
@@ -107,11 +108,11 @@ app.post("/users", (req, res) => {
         avatarUrl: userData.avatarUrl || null,
         joinDate: new Date().toISOString(),
         balance: userData.balance !== undefined ? userData.balance : 0,
-        level: "Юнга",
+        level: "Юнга", // дефолт для новых
         createdAt: new Date().toISOString()
       };
     }
-    console.log("✅ User saved:", telegramId, "level:", db.users[telegramId].level);
+    console.log("✅ User saved:", telegramId);
     res.json(db.users[telegramId]);
   } catch (e) {
     console.error("❌ Error saving user:", e);
@@ -126,32 +127,34 @@ app.get("/users/:telegramId/balance", (req, res) => {
   res.json({ success: true, balance: user.balance || 0 });
 });
 
-// Получить пользователя (с уровнем)
+// НОВЫЙ: Получить пользователя с уровнем
 app.get("/users/:telegramId", (req, res) => {
   try {
     const telegramId = req.params.telegramId;
-    console.log("📥 Запрос пользователя:", telegramId);
+    console.log(`📥 GET запрос пользователя: ${telegramId}`);
     
     const user = db.users[telegramId] || {};
+    const level = user.level || "Юнга";
+    console.log(`Возвращаем уровень: ${level}`);
+    
     res.json({
       success: true,
       ...user,
-      level: user.level || "Юнга"
+      level: level
     });
-    console.log("✅ Отправлен пользователь:", telegramId, "level:", user.level || "Юнга");
   } catch (error) {
     console.error("❌ Error getting user:", error);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
-// Обновить уровень
+// НОВЫЙ: Обновить уровень
 app.post("/users/:telegramId/update-level", (req, res) => {
   try {
     const telegramId = req.params.telegramId;
     const { level } = req.body;
     
-    console.log("🏆 Запрос на обновление уровня:", telegramId, "level:", level);
+    console.log(`🏆 POST update-level для ${telegramId}: level = "${level}"`);
     
     if (!level) {
       console.error("❌ Missing level in request");
@@ -164,11 +167,11 @@ app.post("/users/:telegramId/update-level", (req, res) => {
         level,
         createdAt: new Date().toISOString()
       };
-      console.log("✅ Создан новый пользователь с уровнем:", level);
+      console.log("Создан новый пользователь с уровнем:", level);
     } else {
       db.users[telegramId].level = level;
       db.users[telegramId].updatedAt = new Date().toISOString();
-      console.log("✅ Обновлён уровень:", level);
+      console.log("Уровень обновлён:", level);
     }
     
     res.json({ success: true, level });
@@ -193,7 +196,7 @@ app.post("/payments/create", async (req, res) => {
     const orderId = Date.now().toString();
     const initData = {
       TerminalKey: process.env.TERMINAL_KEY,
-      Amount: amount * 100, // копейки
+      Amount: amount * 100,
       OrderId: orderId,
       Description: `Пополнение баланса для ${telegramId}`,
       SuccessURL: "https://your-frontend-url.ru/payment-success",
