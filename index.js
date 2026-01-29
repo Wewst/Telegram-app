@@ -286,9 +286,9 @@ app.post("/payments/create", async (req, res) => {
       OrderId: orderId,
       Description: `Пополнение баланса для Telegram ID ${telegramId}`,
       SuccessURL:
-        TINKOFF_SUCCESS_URL || "https://t.me/your_bot_username?start=payment_success",
+        TINKOFF_SUCCESS_URL || "https://t.me/FOLLENSHAIDbot?start=payment_success",
       FailURL:
-        TINKOFF_FAIL_URL || "https://t.me/your_bot_username?start=payment_fail"
+        TINKOFF_FAIL_URL || "https://t.me/FOLLENSHAIDbot?start=payment_fail"
     };
 
     if (TINKOFF_NOTIFICATION_URL) {
