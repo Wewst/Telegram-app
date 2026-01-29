@@ -3,21 +3,8 @@ const cors = require("cors");
 const helmet = require("helmet");
 const fs = require("fs");
 const path = require("path");
-
-try { require("dotenv").config({ path: path.join(__dirname, ".env") }); } catch (e) { /* dotenv не обязателен */ }
-
-// CRC32 для подписи Тинькофф (без внешних пакетов)
-function crc32str(s) {
-  let crc = -1;
-  const table = [];
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    table[n] = c;
-  }
-  for (let i = 0; i < s.length; i++) crc = table[(crc ^ s.charCodeAt(i)) & 0xff] ^ (crc >>> 8);
-  return (crc ^ -1) >>> 0;
-}
+const crypto = require("crypto");
+require("dotenv").config();
 
 // если node < 18, то раскомментируй:
 // const fetch = require("node-fetch");
@@ -25,35 +12,50 @@ function crc32str(s) {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// In-memory database (по ТЗ: заказы, платежи, история, возвраты)
+// In-memory database
 let db = {
   users: {},
   carts: {},
   orders: {},
   reviews: [],
-  payments: [],
-  refunds: [],
-  paymentEvents: []
+  payments: []
 };
 
-function logPaymentEvent(event, data) {
-  const entry = { at: new Date().toISOString(), event, ...data };
-  db.paymentEvents.push(entry);
-  if (db.paymentEvents.length > 5000) db.paymentEvents = db.paymentEvents.slice(-3000);
-  console.log("[PAYMENT]", event, JSON.stringify(data));
+// ===== ENV & TINKOFF CONFIG =====
+const {
+  TINKOFF_TERMINAL_KEY,
+  TINKOFF_PASSWORD,
+  TINKOFF_SUCCESS_URL,
+  TINKOFF_FAIL_URL,
+  TINKOFF_NOTIFICATION_URL,
+  TELEGRAM_BOT_TOKEN
+} = process.env;
+
+function createTinkoffToken(params) {
+  if (!TINKOFF_PASSWORD) {
+    console.warn("⚠️ TINKOFF_PASSWORD is not set, token calculation may be invalid");
+  }
+  const data = { ...params, Password: TINKOFF_PASSWORD || "" };
+  const orderedKeys = Object.keys(data).sort();
+  const concatenated = orderedKeys.map((k) => data[k]).join("");
+  return crypto.createHash("sha256").update(concatenated).digest("hex");
 }
 
-async function notifyTelegram(telegramId, text) {
-  const token = process.env.TG_BOT_TOKEN;
-  if (!token) return;
+async function notifyUser(telegramId, text) {
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    if (!TELEGRAM_BOT_TOKEN || !telegramId) return;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: telegramId, text, parse_mode: "HTML" })
+      body: JSON.stringify({
+        chat_id: telegramId,
+        text,
+        parse_mode: "HTML"
+      })
     });
-  } catch (e) {
-    console.error("Notify Telegram:", e);
+  } catch (error) {
+    console.error("❌ Telegram notify error:", error);
   }
 }
 
@@ -72,8 +74,6 @@ function loadDB() {
     if (fs.existsSync("db_backup.json")) {
       const data = fs.readFileSync("db_backup.json", "utf8");
       db = JSON.parse(data);
-      if (!Array.isArray(db.refunds)) db.refunds = [];
-      if (!Array.isArray(db.paymentEvents)) db.paymentEvents = [];
       console.log("💾 Database loaded from backup");
     }
   } catch {
@@ -221,306 +221,375 @@ app.post("/users/:telegramId/update-level", (req, res) => {
   }
 });
 
-// ===== ТИНЬКОФФ ЭКВАЙРИНГ (по ТЗ: заказы, статусы, webhook, отмена, возврат) =====
-
-function tinkoffInitToken(terminalKey, amount, orderId, password) {
-  return String(crc32str(terminalKey + String(amount) + orderId + password));
-}
-
-function tinkoffNotificationToken(body, password) {
-  const keys = Object.keys(body).filter(k => k !== "Token" && body[k] !== "" && body[k] !== undefined).sort();
-  const str = keys.map(k => String(body[k])).join("") + password;
-  return String(crc32str(str));
-}
-
+// ===== PAYMENTS через Tinkoff =====
+// Создание платежа (инициализация в Тинькофф + idempotency)
 app.post("/payments/create", async (req, res) => {
   try {
-    const telegramId = String(req.body.telegramUserId || req.body.telegramId || "");
-    const amount = req.body.totalAmount != null ? Number(req.body.totalAmount) : Number(req.body.amount || 0);
-    const items = req.body.items || [];
-    const source = req.body.source || "telegram_mini_app";
+    const { telegramId, amount, items, source } = req.body || {};
 
     if (!telegramId || !amount || amount < 10) {
-      return res.status(400).json({ success: false, error: "Нужны telegramUserId и сумма не меньше 10" });
+      return res.status(400).json({
+        success: false,
+        error: "Invalid parameters. Minimum amount: 10"
+      });
+    }
+
+    if (!TINKOFF_TERMINAL_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: "TINKOFF_TERMINAL_KEY is not configured on backend"
+      });
     }
 
     if (!db.users[telegramId]) {
-      db.users[telegramId] = { telegramId, balance: 0, createdAt: new Date().toISOString() };
+      db.users[telegramId] = {
+        telegramId,
+        balance: 0,
+        createdAt: new Date().toISOString()
+      };
     }
 
-    const terminalKey = process.env.TERMINAL_KEY;
-    const terminalPassword = process.env.TERMINAL_PASSWORD;
-    const successUrl = process.env.SUCCESS_URL || "https://t.me/";
-    const failUrl = process.env.FAIL_URL || "https://t.me/";
+    // Idempotency: если есть уже активный платеж с такой же суммой и пользователем — вернем его
+    const existingPayment = db.payments.find(
+      (p) =>
+        p.telegramId === telegramId &&
+        Number(p.amount) === Number(amount) &&
+        ["NEW", "PENDING"].includes(p.status)
+    );
 
-    const idempotencyKey = req.body.idempotencyKey || req.body.orderId;
-    const orderId = idempotencyKey || ("order_" + telegramId + "_" + Date.now());
-    const amountKopecks = Math.round(amount * 100);
-
-    const existingPayment = db.payments.find(p => p.orderId === orderId);
-    if (existingPayment && existingPayment.paymentUrl) {
-      logPaymentEvent("IDEMPOTENT_RETURN", { orderId, paymentId: existingPayment.paymentId });
-      return res.json({ success: true, paymentId: existingPayment.paymentId, paymentUrl: existingPayment.paymentUrl });
+    if (existingPayment) {
+      console.log("♻️ Returning existing payment (idempotent):", existingPayment.id);
+      return res.json({
+        success: true,
+        paymentId: existingPayment.id,
+        paymentUrl: existingPayment.paymentUrl
+      });
     }
 
-    const order = {
+    const now = new Date().toISOString();
+    const orderId = `tg-${telegramId}-${Date.now()}`;
+
+    // Создаем заказ в "БД"
+    db.orders[orderId] = {
       orderId,
       telegramId,
-      items,
-      totalAmount: amount,
+      items: items || [],
+      total: amount,
       status: "CREATED",
-      createdAt: new Date().toISOString()
+      source: source || "telegram_mini_app",
+      createdAt: now
     };
-    db.orders.push(order);
-    logPaymentEvent("ORDER_CREATED", { orderId, telegramId, amount });
 
-    if (terminalKey && terminalPassword) {
-      const initData = {
-        TerminalKey: terminalKey,
-        Amount: amountKopecks,
-        OrderId: orderId,
-        Description: `Пополнение баланса ${amount} ₽`,
-        SuccessURL: successUrl,
-        FailURL: failUrl,
-        Token: tinkoffInitToken(terminalKey, amountKopecks, orderId, terminalPassword)
-      };
+    const initData = {
+      TerminalKey: TINKOFF_TERMINAL_KEY,
+      Amount: Math.round(amount * 100),
+      OrderId: orderId,
+      Description: `Пополнение баланса для Telegram ID ${telegramId}`,
+      SuccessURL:
+        TINKOFF_SUCCESS_URL || "https://t.me/your_bot_username?start=payment_success",
+      FailURL:
+        TINKOFF_FAIL_URL || "https://t.me/your_bot_username?start=payment_fail"
+    };
 
-      const tinkoffResp = await fetch("https://securepay.tinkoff.ru/v2/Init", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(initData)
+    if (TINKOFF_NOTIFICATION_URL) {
+      initData.NotificationURL = TINKOFF_NOTIFICATION_URL;
+    }
+
+    initData.Token = createTinkoffToken(initData);
+
+    const tinkoffResp = await fetch("https://securepay.tinkoff.ru/v2/Init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(initData)
+    });
+    const tinkoffJson = await tinkoffResp.json();
+
+    console.log("📡 Tinkoff Init response:", tinkoffJson);
+
+    if (!tinkoffJson.Success) {
+      console.error("❌ Tinkoff Init error:", tinkoffJson);
+      return res.status(500).json({
+        success: false,
+        error: "Tinkoff Init failed",
+        details: tinkoffJson
       });
-      const tinkoffJson = await tinkoffResp.json();
-
-      if (tinkoffJson.Success && tinkoffJson.PaymentURL) {
-        const paymentId = tinkoffJson.PaymentId || orderId;
-        const payment = {
-          orderId,
-          paymentId: String(paymentId),
-          telegramId,
-          amount,
-          amountKopecks,
-          status: "NEW",
-          paymentUrl: tinkoffJson.PaymentURL,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          source
-        };
-        db.payments.push(payment);
-        logPaymentEvent("PAYMENT_CREATED", { orderId, paymentId, amount });
-        return res.json({ success: true, paymentId, paymentUrl: tinkoffJson.PaymentURL });
-      }
-      logPaymentEvent("TINKOFF_INIT_FAIL", { orderId, response: tinkoffJson });
-      return res.status(500).json({ success: false, error: tinkoffJson.Message || "Ошибка Тинькофф" });
     }
 
     const payment = {
-      orderId,
-      paymentId: orderId,
+      id: orderId,
       telegramId,
       amount,
       status: "NEW",
-      paymentUrl: successUrl,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      source
+      createdAt: now,
+      paymentUrl: tinkoffJson.PaymentURL,
+      tinkoffPaymentId: tinkoffJson.PaymentId,
+      history: [
+        {
+          status: "NEW",
+          rawStatus: tinkoffJson.Status || "NEW",
+          at: now
+        }
+      ],
+      source: source || "telegram_mini_app"
     };
     db.payments.push(payment);
-    res.json({ success: true, paymentId: orderId, paymentUrl: successUrl });
+
+    console.log("💰 Tinkoff payment created:", payment);
+    res.json({ success: true, paymentId: orderId, paymentUrl: tinkoffJson.PaymentURL });
   } catch (e) {
-    console.error("❌ Payment create:", e);
+    console.error("❌ Payment creation error:", e);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
-app.get("/payments/status/:paymentId", (req, res) => {
-  const payment = db.payments.find(p => p.paymentId === req.params.paymentId || p.orderId === req.params.paymentId);
-  if (!payment) return res.status(404).json({ success: false, error: "Payment not found" });
-  res.json({
-    success: true,
-    paymentId: payment.paymentId,
-    orderId: payment.orderId,
-    status: payment.status,
-    amount: payment.amount,
-    completedAt: payment.completedAt || null
-  });
+// Webhook / callback от Tinkoff (истина по статусам)
+app.post("/payments/webhook", async (req, res) => {
+  try {
+    const data = req.body || {};
+    console.log("📩 Tinkoff webhook:", data);
+
+    const { Token: receivedToken, ...unsigned } = data;
+    const expectedToken = createTinkoffToken(unsigned);
+
+    if (!receivedToken || receivedToken !== expectedToken) {
+      console.error("❌ Invalid Tinkoff webhook signature");
+      // Не обновляем ничего, но отвечаем 200, чтобы Tinkoff не спамил
+      return res.json({ success: false, message: "Invalid signature" });
+    }
+
+    const { OrderId, Status, Amount, PaymentId } = data;
+
+    let payment =
+      db.payments.find((p) => p.id === OrderId) ||
+      db.payments.find((p) => p.tinkoffPaymentId === PaymentId);
+
+    if (!payment) {
+      console.warn("⚠️ Payment not found for webhook, creating stub record");
+      payment = {
+        id: OrderId || `p-${PaymentId}`,
+        telegramId: null,
+        amount: Amount ? Amount / 100 : 0,
+        status: Status || "UNKNOWN",
+        createdAt: new Date().toISOString(),
+        tinkoffPaymentId: PaymentId,
+        history: []
+      };
+      db.payments.push(payment);
+    }
+
+    const now = new Date().toISOString();
+    payment.history = payment.history || [];
+    payment.history.push({
+      status: Status,
+      rawStatus: Status,
+      at: now
+    });
+
+    const user = payment.telegramId ? db.users[payment.telegramId] : null;
+    const order = db.orders[payment.id];
+
+    switch (Status) {
+      case "NEW":
+        payment.status = "NEW";
+        if (order) order.status = "CREATED";
+        break;
+
+      case "CONFIRMED":
+        payment.status = "CONFIRMED";
+        payment.completedAt = now;
+        if (order) order.status = "COMPLETED";
+
+        if (user && Amount) {
+          const delta = Amount / 100;
+          user.balance = (user.balance || 0) + delta;
+          user.updatedAt = now;
+          console.log("💰 Balance increased via webhook:", {
+            telegramId: payment.telegramId,
+            delta,
+            newBalance: user.balance
+          });
+        }
+
+        await notifyUser(
+          payment.telegramId,
+          `✅ Оплата успешно подтверждена.\nСумма: ${Amount / 100} ₽`
+        );
+        break;
+
+      case "REJECTED":
+        payment.status = "REJECTED";
+        if (order) order.status = "REJECTED";
+        await notifyUser(
+          payment.telegramId,
+          "❌ Платёж был отклонён банком или платёжной системой."
+        );
+        break;
+
+      case "CANCELED":
+        payment.status = "CANCELED";
+        if (order) order.status = "CANCELED";
+        await notifyUser(payment.telegramId, "⚠️ Платёж был отменён.");
+        break;
+
+      case "REFUNDED":
+        payment.status = "REFUNDED";
+        if (!payment.refunds) payment.refunds = [];
+        payment.refunds.push({
+          amount: Amount ? Amount / 100 : 0,
+          at: now
+        });
+        if (order) order.status = "REFUNDED";
+
+        if (user && Amount) {
+          const delta = Amount / 100;
+          user.balance = Math.max(0, (user.balance || 0) - delta);
+          user.updatedAt = now;
+          console.log("↩️ Balance decreased due to refund:", {
+            telegramId: payment.telegramId,
+            delta,
+            newBalance: user.balance
+          });
+        }
+
+        await notifyUser(
+          payment.telegramId,
+          `↩️ По вашему платежу выполнен возврат.\nСумма: ${Amount / 100} ₽`
+        );
+        break;
+
+      default:
+        console.log("ℹ️ Unhandled Tinkoff status:", Status);
+        payment.status = Status || payment.status;
+        break;
+    }
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("❌ Webhook error:", e);
+    res.status(500).json({ success: false });
+  }
 });
 
-app.post("/payments/webhook/tinkoff", (req, res) => {
-  const body = req.body;
-  const terminalPassword = process.env.TERMINAL_PASSWORD || "";
-  const receivedToken = body.Token;
-  const expectedToken = tinkoffNotificationToken(body, terminalPassword);
-  if (receivedToken !== undefined && receivedToken !== "" && expectedToken !== receivedToken) {
-    logPaymentEvent("WEBHOOK_INVALID_TOKEN", { OrderId: body.OrderId });
-    return res.status(400).json({ success: false, error: "Invalid token" });
-  }
-
-  const payment = db.payments.find(p => p.orderId === body.OrderId || String(p.paymentId) === String(body.PaymentId));
-  if (!payment) {
-    logPaymentEvent("WEBHOOK_PAYMENT_NOT_FOUND", { OrderId: body.OrderId });
-    return res.status(404).json({ success: false, error: "Payment not found" });
-  }
-
-  const status = String(body.Status || "").toUpperCase();
-  const order = db.orders.find(o => o.orderId === payment.orderId);
-  const amountRub = (body.Amount != null ? Number(body.Amount) / 100 : payment.amount) || payment.amount;
-
-  payment.updatedAt = new Date().toISOString();
-  payment.status = status;
-  if (order) order.status = status;
-
-  switch (status) {
-    case "CONFIRMED":
-      payment.completedAt = new Date().toISOString();
-      if (db.users[payment.telegramId]) {
-        db.users[payment.telegramId].balance = (db.users[payment.telegramId].balance || 0) + amountRub;
-        db.users[payment.telegramId].updatedAt = new Date().toISOString();
-      }
-      logPaymentEvent("CONFIRMED", { orderId: payment.orderId, telegramId: payment.telegramId, amount: amountRub });
-      notifyTelegram(payment.telegramId, "✅ Оплата прошла. Зачислено " + amountRub + " ₽.");
-      break;
-    case "REJECTED":
-    case "CANCELED":
-      logPaymentEvent(status, { orderId: payment.orderId });
-      notifyTelegram(payment.telegramId, status === "REJECTED" ? "❌ Платёж отклонён." : "❌ Платёж отменён.");
-      break;
-    case "REFUNDED":
-      if (db.users[payment.telegramId]) {
-        db.users[payment.telegramId].balance = Math.max(0, (db.users[payment.telegramId].balance || 0) - amountRub);
-        db.users[payment.telegramId].updatedAt = new Date().toISOString();
-      }
-      logPaymentEvent("REFUNDED", { orderId: payment.orderId, amount: amountRub });
-      notifyTelegram(payment.telegramId, "↩️ Возврат " + amountRub + " ₽.");
-      break;
-    default:
-      logPaymentEvent("STATUS_UPDATE", { orderId: payment.orderId, status });
-  }
-
-  res.json({ success: true });
-});
-
+// Для совместимости со старым URL
 app.post("/payments/callback", (req, res) => {
-  const body = req.body;
-  const terminalPassword = process.env.TERMINAL_PASSWORD || "";
-  const receivedToken = body.Token;
-  const expectedToken = tinkoffNotificationToken(body, terminalPassword);
-  if (receivedToken !== undefined && receivedToken !== "" && expectedToken !== receivedToken) {
-    logPaymentEvent("WEBHOOK_INVALID_TOKEN", { OrderId: body.OrderId });
-    return res.status(400).json({ success: false, error: "Invalid token" });
-  }
-  const payment = db.payments.find(p => p.orderId === body.OrderId || String(p.paymentId) === String(body.PaymentId));
-  if (!payment) return res.status(404).json({ success: false, error: "Payment not found" });
-  const status = String(body.Status || "").toUpperCase();
-  const order = db.orders.find(o => o.orderId === payment.orderId);
-  const amountRub = (body.Amount != null ? Number(body.Amount) / 100 : payment.amount) || payment.amount;
-  payment.updatedAt = new Date().toISOString();
-  payment.status = status;
-  if (order) order.status = status;
-  switch (status) {
-    case "CONFIRMED":
-      payment.completedAt = new Date().toISOString();
-      if (db.users[payment.telegramId]) {
-        db.users[payment.telegramId].balance = (db.users[payment.telegramId].balance || 0) + amountRub;
-        db.users[payment.telegramId].updatedAt = new Date().toISOString();
-      }
-      logPaymentEvent("CONFIRMED", { orderId: payment.orderId, telegramId: payment.telegramId, amount: amountRub });
-      notifyTelegram(payment.telegramId, "✅ Оплата прошла. Зачислено " + amountRub + " ₽.");
-      break;
-    case "REJECTED":
-    case "CANCELED":
-      logPaymentEvent(status, { orderId: payment.orderId });
-      notifyTelegram(payment.telegramId, status === "REJECTED" ? "❌ Платёж отклонён." : "❌ Платёж отменён.");
-      break;
-    case "REFUNDED":
-      if (db.users[payment.telegramId]) {
-        db.users[payment.telegramId].balance = Math.max(0, (db.users[payment.telegramId].balance || 0) - amountRub);
-        db.users[payment.telegramId].updatedAt = new Date().toISOString();
-      }
-      logPaymentEvent("REFUNDED", { orderId: payment.orderId, amount: amountRub });
-      notifyTelegram(payment.telegramId, "↩️ Возврат " + amountRub + " ₽.");
-      break;
-    default:
-      logPaymentEvent("STATUS_UPDATE", { orderId: payment.orderId, status });
-  }
-  res.json({ success: true });
+  console.log("ℹ️ /payments/callback called, redirecting to /payments/webhook handler");
+  req.url = "/payments/webhook";
+  app._router.handle(req, res);
 });
 
-app.post("/api/payments/cancel", async (req, res) => {
+// Отмена платежа через Tinkoff API
+app.post("/payments/:paymentId/cancel", async (req, res) => {
   try {
-    const { orderId, paymentId } = req.body;
-    const payment = db.payments.find(p => p.orderId === orderId || p.paymentId === paymentId);
-    if (!payment) return res.status(404).json({ success: false, error: "Payment not found" });
-    if (["CONFIRMED", "REFUNDED", "REJECTED", "CANCELED"].includes(payment.status)) {
-      return res.status(400).json({ success: false, error: "Payment already in final state" });
+    const paymentId = req.params.paymentId;
+    const payment =
+      db.payments.find((p) => p.id === paymentId) ||
+      db.payments.find((p) => String(p.tinkoffPaymentId) === String(paymentId));
+
+    if (!payment || !payment.tinkoffPaymentId) {
+      return res.status(404).json({ success: false, error: "Payment not found" });
     }
-    const terminalKey = process.env.TERMINAL_KEY;
-    const terminalPassword = process.env.TERMINAL_PASSWORD;
-    if (!terminalKey || !terminalPassword) return res.status(500).json({ success: false, error: "Gateway not configured" });
-    const cancelToken = String(crc32str(terminalKey + String(payment.paymentId) + terminalPassword));
-    const cancelResp = await fetch("https://securepay.tinkoff.ru/v2/Cancel", {
+
+    const payload = {
+      TerminalKey: TINKOFF_TERMINAL_KEY,
+      PaymentId: payment.tinkoffPaymentId
+    };
+    payload.Token = createTinkoffToken(payload);
+
+    const resp = await fetch("https://securepay.tinkoff.ru/v2/Cancel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ TerminalKey: terminalKey, PaymentId: payment.paymentId, Token: cancelToken })
+      body: JSON.stringify(payload)
     });
-    const cancelJson = await cancelResp.json();
-    if (!cancelJson.Success) return res.status(500).json({ success: false, error: cancelJson.Message || "Cancel failed" });
+    const json = await resp.json();
+    console.log("📡 Tinkoff Cancel response:", json);
+
+    if (!json.Success) {
+      return res.status(500).json({ success: false, error: "Cancel failed", details: json });
+    }
+
     payment.status = "CANCELED";
-    payment.updatedAt = new Date().toISOString();
-    const order = db.orders.find(o => o.orderId === payment.orderId);
+    payment.canceledAt = new Date().toISOString();
+
+    const order = db.orders[payment.id];
     if (order) order.status = "CANCELED";
-    logPaymentEvent("CANCELED", { orderId: payment.orderId });
-    res.json({ success: true, status: "CANCELED" });
-  } catch (e) {
-    console.error("❌ Cancel error:", e);
+
+    await notifyUser(
+      payment.telegramId,
+      "⚠️ Ваш платёж был отменён. Если это ошибка — попробуйте оплатить ещё раз."
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("❌ Payment cancel error:", error);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
-app.post("/api/payments/refund", async (req, res) => {
+// Полный / частичный возврат средств
+app.post("/payments/:paymentId/refund", async (req, res) => {
   try {
-    const { orderId, paymentId, amount } = req.body;
-    const payment = db.payments.find(p => p.orderId === orderId || p.paymentId === paymentId);
-    if (!payment) return res.status(404).json({ success: false, error: "Payment not found" });
-    if (payment.status !== "CONFIRMED") return res.status(400).json({ success: false, error: "Only CONFIRMED can be refunded" });
-    const refundAmount = amount != null ? Number(amount) : payment.amount;
-    if (refundAmount <= 0 || refundAmount > payment.amount) return res.status(400).json({ success: false, error: "Invalid refund amount" });
-    const terminalKey = process.env.TERMINAL_KEY;
-    const terminalPassword = process.env.TERMINAL_PASSWORD;
-    if (!terminalKey || !terminalPassword) return res.status(500).json({ success: false, error: "Gateway not configured" });
-    const refundAmountKopecks = Math.round(refundAmount * 100);
-    const refundToken = String(crc32str(terminalKey + String(payment.paymentId) + String(refundAmountKopecks) + terminalPassword));
-    const refundResp = await fetch("https://securepay.tinkoff.ru/v2/Cancel", {
+    const paymentId = req.params.paymentId;
+    const { amount } = req.body || {};
+
+    const payment =
+      db.payments.find((p) => p.id === paymentId) ||
+      db.payments.find((p) => String(p.tinkoffPaymentId) === String(paymentId));
+
+    if (!payment || !payment.tinkoffPaymentId) {
+      return res.status(404).json({ success: false, error: "Payment not found" });
+    }
+
+    const refundAmount = amount ? Number(amount) : Number(payment.amount);
+    if (!refundAmount || refundAmount <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid refund amount" });
+    }
+
+    const payload = {
+      TerminalKey: TINKOFF_TERMINAL_KEY,
+      PaymentId: payment.tinkoffPaymentId,
+      Amount: Math.round(refundAmount * 100)
+    };
+    payload.Token = createTinkoffToken(payload);
+
+    const resp = await fetch("https://securepay.tinkoff.ru/v2/Refund", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        TerminalKey: terminalKey,
-        PaymentId: payment.paymentId,
-        Amount: refundAmountKopecks,
-        Token: refundToken
-      })
+      body: JSON.stringify(payload)
     });
-    const refundJson = await refundResp.json();
-    if (!refundJson.Success) return res.status(500).json({ success: false, error: refundJson.Message || "Refund failed" });
-    const refundRecord = {
-      id: "refund_" + Date.now(),
-      orderId: payment.orderId,
-      paymentId: payment.paymentId,
-      telegramId: payment.telegramId,
-      amount: refundAmount,
-      createdAt: new Date().toISOString()
-    };
-    db.refunds.push(refundRecord);
-    payment.status = refundAmount >= payment.amount ? "REFUNDED" : payment.status;
-    payment.updatedAt = new Date().toISOString();
-    if (db.users[payment.telegramId]) {
-      db.users[payment.telegramId].balance = Math.max(0, (db.users[payment.telegramId].balance || 0) - refundAmount);
-      db.users[payment.telegramId].updatedAt = new Date().toISOString();
+    const json = await resp.json();
+    console.log("📡 Tinkoff Refund response:", json);
+
+    if (!json.Success) {
+      return res
+        .status(500)
+        .json({ success: false, error: "Refund failed", details: json });
     }
-    logPaymentEvent("REFUND", refundRecord);
-    res.json({ success: true, refund: refundRecord });
-  } catch (e) {
-    console.error("❌ Refund error:", e);
+
+    const now = new Date().toISOString();
+    if (!payment.refunds) payment.refunds = [];
+    payment.refunds.push({
+      amount: refundAmount,
+      at: now
+    });
+    payment.status = "REFUNDED";
+
+    const order = db.orders[payment.id];
+    if (order) order.status = "REFUNDED";
+
+    const user = payment.telegramId ? db.users[payment.telegramId] : null;
+    if (user) {
+      user.balance = Math.max(0, (user.balance || 0) - refundAmount);
+      user.updatedAt = now;
+    }
+
+    await notifyUser(
+      payment.telegramId,
+      `↩️ По вашему платежу выполнен возврат.\nСумма: ${refundAmount} ₽`
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("❌ Payment refund error:", error);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
