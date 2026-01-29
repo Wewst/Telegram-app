@@ -2,10 +2,10 @@
   "name": "telegram-backend",
   "version": "1.0.0",
   "description": "Backend for Telegram Mini App",
-  "main": "index.js",
+  "main": "telegram.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
+    "start": "node telegram.js",
+    "dev": "nodemon telegram.js",
     "test": "echo \"No tests specified\" && exit 0"
   },
   "dependencies": {
