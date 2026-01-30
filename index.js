@@ -126,7 +126,7 @@ app.post("/users", (req, res) => {
     const telegramId = String(userData.telegramId || userData.id || "");
     if (!telegramId) return res.status(400).json({ error: "Missing telegramId" });
 
-    const existingUser = db.users[telegramId];
+const existingUser = db.users[telegramId];
     if (existingUser) {
       db.users[telegramId] = {
         ...existingUser,
@@ -162,9 +162,21 @@ app.post("/users", (req, res) => {
 
 // Баланс
 app.get("/users/:telegramId/balance", (req, res) => {
-  const user = db.users[req.params.telegramId];
-  if (!user) return res.status(404).json({ error: "User not found", balance: 0 });
-  res.json({ success: true, balance: user.balance || 0 });
+  try {
+    const telegramId = req.params.telegramId;
+    const user = db.users[telegramId];
+    
+    // Возвращаем баланс 0 для несуществующих пользователей (не 404)
+    // Это позволяет избежать ошибок на фронтенде
+    if (!user) {
+      return res.json({ success: true, balance: 0 });
+    }
+    
+    res.json({ success: true, balance: user.balance || 0 });
+  } catch (error) {
+    console.error("❌ Error getting balance:", error);
+    res.status(500).json({ success: false, error: "Internal server error", balance: 0 });
+  }
 });
 
 // НОВЫЙ: Получить пользователя с уровнем
@@ -241,7 +253,7 @@ app.post("/payments/create", async (req, res) => {
       });
     }
 
-    if (!db.users[telegramId]) {
+if (!db.users[telegramId]) {
       db.users[telegramId] = {
         telegramId,
         balance: 0,
@@ -286,9 +298,9 @@ app.post("/payments/create", async (req, res) => {
       OrderId: orderId,
       Description: `Пополнение баланса для Telegram ID ${telegramId}`,
       SuccessURL:
-        TINKOFF_SUCCESS_URL || "https://t.me/FOLLENSHAIDbot?start=payment_success",
+        TINKOFF_SUCCESS_URL || "https://t.me/your_bot_username?start=payment_success",
       FailURL:
-        TINKOFF_FAIL_URL || "https://t.me/FOLLENSHAIDbot?start=payment_fail"
+        TINKOFF_FAIL_URL || "https://t.me/your_bot_username?start=payment_fail"
     };
 
     if (TINKOFF_NOTIFICATION_URL) {
@@ -377,7 +389,7 @@ app.post("/payments/webhook", async (req, res) => {
       db.payments.push(payment);
     }
 
-    const now = new Date().toISOString();
+const now = new Date().toISOString();
     payment.history = payment.history || [];
     payment.history.push({
       status: Status,
@@ -395,66 +407,128 @@ app.post("/payments/webhook", async (req, res) => {
         break;
 
       case "CONFIRMED":
+        // Проверяем, не был ли платеж уже обработан
+        if (payment.status === "CONFIRMED" && payment.completedAt) {
+          console.log("⚠️ Payment already confirmed, skipping duplicate webhook:", payment.id);
+          return res.json({ success: true, message: "Already processed" });
+        }
+
         payment.status = "CONFIRMED";
         payment.completedAt = now;
         if (order) order.status = "COMPLETED";
 
-        if (user && Amount) {
+        // Проверяем, не был ли баланс уже увеличен для этого платежа
+        const wasBalanceIncreased = payment.balanceIncreased || false;
+        if (user && Amount && !wasBalanceIncreased) {
           const delta = Amount / 100;
           user.balance = (user.balance || 0) + delta;
           user.updatedAt = now;
+          payment.balanceIncreased = true; // Помечаем что баланс уже увеличен
           console.log("💰 Balance increased via webhook:", {
             telegramId: payment.telegramId,
             delta,
             newBalance: user.balance
           });
+        } else if (wasBalanceIncreased) {
+          console.log("⚠️ Balance already increased for this payment, skipping:", payment.id);
         }
 
-        await notifyUser(
-          payment.telegramId,
-          `✅ Оплата успешно подтверждена.\nСумма: ${Amount / 100} ₽`
-        );
+        // Отправляем уведомление только если еще не отправляли
+        if (!payment.notificationSent) {
+          await notifyUser(
+            payment.telegramId,
+            `✅ Оплата успешно подтверждена.\nСумма: ${Amount / 100} ₽`
+          );
+          payment.notificationSent = true;
+        }
         break;
 
       case "REJECTED":
+        // Проверяем, не был ли статус уже установлен
+        if (payment.status === "REJECTED" && payment.notificationSent) {
+          console.log("⚠️ Payment already rejected, skipping duplicate webhook:", payment.id);
+          return res.json({ success: true, message: "Already processed" });
+        }
         payment.status = "REJECTED";
         if (order) order.status = "REJECTED";
-        await notifyUser(
-          payment.telegramId,
-          "❌ Платёж был отклонён банком или платёжной системой."
-        );
+        if (!payment.notificationSent) {
+          await notifyUser(
+            payment.telegramId,
+            "❌ Платёж был отклонён банком или платёжной системой."
+          );
+          payment.notificationSent = true;
+        }
         break;
 
       case "CANCELED":
+        // Проверяем, не был ли статус уже установлен
+        if (payment.status === "CANCELED" && payment.notificationSent) {
+          console.log("⚠️ Payment already canceled, skipping duplicate webhook:", payment.id);
+          return res.json({ success: true, message: "Already processed" });
+        }
         payment.status = "CANCELED";
         if (order) order.status = "CANCELED";
-        await notifyUser(payment.telegramId, "⚠️ Платёж был отменён.");
+        if (!payment.notificationSent) {
+          await notifyUser(payment.telegramId, "⚠️ Платёж был отменён.");
+          payment.notificationSent = true;
+        }
         break;
 
       case "REFUNDED":
-        payment.status = "REFUNDED";
-        if (!payment.refunds) payment.refunds = [];
-        payment.refunds.push({
-          amount: Amount ? Amount / 100 : 0,
-          at: now
-        });
-        if (order) order.status = "REFUNDED";
-
-        if (user && Amount) {
-          const delta = Amount / 100;
-          user.balance = Math.max(0, (user.balance || 0) - delta);
-          user.updatedAt = now;
-          console.log("↩️ Balance decreased due to refund:", {
-            telegramId: payment.telegramId,
-            delta,
-            newBalance: user.balance
-          });
+        // Проверяем, не был ли возврат уже обработан для этой суммы
+        const refundAmount = Amount ? Amount / 100 : 0;
+        
+        // Проверяем, есть ли уже возврат с такой же суммой в последние 5 минут
+        const recentRefund = payment.refunds?.find(
+          (r) => Math.abs(r.amount - refundAmount) < 0.01 && 
+                 Math.abs(new Date(r.at).getTime() - new Date(now).getTime()) < 300000
+        );
+        
+        if (recentRefund) {
+          console.log("⚠️ Refund already processed, skipping duplicate webhook:", payment.id);
+          return res.json({ success: true, message: "Already processed" });
         }
 
-        await notifyUser(
-          payment.telegramId,
-          `↩️ По вашему платежу выполнен возврат.\nСумма: ${Amount / 100} ₽`
-        );
+
+payment.status = "REFUNDED";
+        if (!payment.refunds) payment.refunds = [];
+        
+        // Проверяем, не был ли баланс уже уменьшен для этой суммы возврата
+        const refundKey = `refund_${refundAmount}_${Math.floor(new Date(now).getTime() / 60000)}`;
+        const wasRefundProcessed = payment.processedRefunds?.includes(refundKey);
+        
+        if (!wasRefundProcessed) {
+          payment.refunds.push({
+            amount: refundAmount,
+            at: now
+          });
+          
+          if (!payment.processedRefunds) payment.processedRefunds = [];
+          payment.processedRefunds.push(refundKey);
+          
+          // Уменьшаем баланс только если еще не уменьшали для этого возврата
+          if (user && Amount) {
+            const delta = Amount / 100;
+            user.balance = Math.max(0, (user.balance || 0) - delta);
+            user.updatedAt = now;
+            console.log("↩️ Balance decreased due to refund:", {
+              telegramId: payment.telegramId,
+              delta,
+              newBalance: user.balance
+            });
+          }
+        }
+        
+        if (order) order.status = "REFUNDED";
+
+        // Отправляем уведомление только один раз для этого возврата
+        if (!payment.refundNotificationSent || !wasRefundProcessed) {
+          await notifyUser(
+            payment.telegramId,
+            `↩️ По вашему платежу выполнен возврат.\nСумма: ${refundAmount} ₽`
+          );
+          payment.refundNotificationSent = true;
+        }
         break;
 
       default:
@@ -539,7 +613,8 @@ app.post("/payments/:paymentId/refund", async (req, res) => {
       return res.status(404).json({ success: false, error: "Payment not found" });
     }
 
-    const refundAmount = amount ? Number(amount) : Number(payment.amount);
+
+const refundAmount = amount ? Number(amount) : Number(payment.amount);
     if (!refundAmount || refundAmount <= 0) {
       return res.status(400).json({ success: false, error: "Invalid refund amount" });
     }
@@ -835,6 +910,7 @@ app.post("/cart/clear", (req, res) => {
   }
 });
 
+
 // --- Balance operations (старые методы для совместимости) ---
 app.post("/users/:telegramId/balance/add", (req, res) => {
   try {
@@ -962,7 +1038,8 @@ app.post("/reviews", (req, res) => {
 
     res.json({ success: true, review: newReview });
 
-  } catch (error) {
+
+} catch (error) {
     console.error("❌ REVIEW ERROR:", error);
     res.status(500).json({ error: "Internal server error" });
   }
