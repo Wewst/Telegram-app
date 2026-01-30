@@ -378,7 +378,7 @@ app.post("/payments/webhook", async (req, res) => {
     if (!payment) {
       console.warn("⚠️ Payment not found for webhook, creating stub record");
       payment = {
-        id: OrderId || `p-${PaymentId}`,
+        id: `OrderId || p-${PaymentId}`,
         telegramId: null,
         amount: Amount ? Amount / 100 : 0,
         status: Status || "UNKNOWN",
@@ -488,7 +488,6 @@ const now = new Date().toISOString();
           console.log("⚠️ Refund already processed, skipping duplicate webhook:", payment.id);
           return res.json({ success: true, message: "Already processed" });
         }
-
 
 payment.status = "REFUNDED";
         if (!payment.refunds) payment.refunds = [];
@@ -612,7 +611,6 @@ app.post("/payments/:paymentId/refund", async (req, res) => {
     if (!payment || !payment.tinkoffPaymentId) {
       return res.status(404).json({ success: false, error: "Payment not found" });
     }
-
 
 const refundAmount = amount ? Number(amount) : Number(payment.amount);
     if (!refundAmount || refundAmount <= 0) {
@@ -910,7 +908,6 @@ app.post("/cart/clear", (req, res) => {
   }
 });
 
-
 // --- Balance operations (старые методы для совместимости) ---
 app.post("/users/:telegramId/balance/add", (req, res) => {
   try {
@@ -975,25 +972,47 @@ app.post("/users/:telegramId/balance/subtract", (req, res) => {
 // --- Orders ---
 app.post("/orders", (req, res) => {
   try {
-    const { telegramId, items, total, status } = req.body;
+    const { telegramId, items, total, status, orderDate } = req.body;
     
     if (!telegramId) {
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
-    const orderId = Date.now().toString();
+    const orderId = `order-${telegramId}-${Date.now()}`;
+    const now = new Date().toISOString();
+    
+    // Получаем информацию о пользователе
+    const user = db.users[telegramId];
+    const userName = user ? (user.firstName || user.username || `User_${telegramId.slice(-4)}`) : `User_${telegramId.slice(-4)}`;
     
     db.orders[orderId] = {
       orderId,
       telegramId,
+      userName: userName,
       items: items || [],
       total: total || 0,
       status: status || "completed",
-      orderDate: new Date().toISOString()
+      orderDate: orderDate || now,
+      createdAt: now,
+      // Детальная информация о каждом товаре
+      itemsDetails: (items || []).map(item => ({
+        productId: item.productId || item.id,
+        name: item.name || item.title || "Unknown",
+        price: item.price || 0,
+        quantity: item.quantity || 1,
+        total: (item.price || 0) * (item.quantity || 1)
+      }))
     };
     
-    console.log("📦 Order created:", { orderId, user: telegramId, total, itemsCount: items ? items.length : 0 });
-    res.json({ success: true, orderId });
+    console.log("📦 Order created:", { 
+      orderId, 
+      user: telegramId, 
+      userName: userName,
+      total, 
+      itemsCount: items ? items.length : 0,
+      items: items
+    });
+    res.json({ success: true, orderId, order: db.orders[orderId] });
     
   } catch (error) {
     console.error("❌ Order creation error:", error);
@@ -1017,7 +1036,7 @@ app.post("/reviews", (req, res) => {
       return res.status(400).json({ error: "Review text must be at least 5 characters" });
     }
 
-    const existingReviewIndex = db.reviews.findIndex(review => review.userId === telegramId);
+const existingReviewIndex = db.reviews.findIndex(review => review.userId === telegramId);
     if (existingReviewIndex >= 0) {
       return res.status(400).json({ error: "User has already submitted a review" });
     }
@@ -1038,8 +1057,7 @@ app.post("/reviews", (req, res) => {
 
     res.json({ success: true, review: newReview });
 
-
-} catch (error) {
+  } catch (error) {
     console.error("❌ REVIEW ERROR:", error);
     res.status(500).json({ error: "Internal server error" });
   }
