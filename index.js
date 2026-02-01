@@ -1,4 +1,3 @@
-Follenvajder, [02.02.2026 0:19]
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -45,7 +44,7 @@ function createTinkoffToken(params) {
 async function notifyUser(telegramId, text) {
   try {
     if (!TELEGRAM_BOT_TOKEN || !telegramId) return;
-    const url = https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
     await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -124,10 +123,9 @@ app.get("/health", (req, res) => {
 app.post("/users", (req, res) => {
   try {
     const userData = req.body || {};
-    const telegramId = String(userData.telegramId  userData.id  "");
+    const telegramId = String(userData.telegramId || userData.id || "");
     if (!telegramId) return res.status(400).json({ error: "Missing telegramId" });
 
-Follenvajder, [02.02.2026 0:19]
 const existingUser = db.users[telegramId];
     if (existingUser) {
       db.users[telegramId] = {
@@ -137,7 +135,7 @@ const existingUser = db.users[telegramId];
         firstName: userData.firstName || existingUser.firstName,
         lastName: userData.lastName || existingUser.lastName,
         avatarUrl: userData.avatarUrl || existingUser.avatarUrl,
-        level: userData.level  existingUser.level  "Юнга", // уровень с дефолтом
+        level: userData.level || existingUser.level || "Юнга", // уровень с дефолтом
         updatedAt: new Date().toISOString()
       };
     } else {
@@ -241,7 +239,7 @@ app.post("/payments/create", async (req, res) => {
   try {
     const { telegramId, amount, items, source } = req.body || {};
 
-    if (!telegramId  !amount  amount < 10) {
+    if (!telegramId || !amount || amount < 10) {
       return res.status(400).json({
         success: false,
         error: "Invalid parameters. Minimum amount: 10"
@@ -255,7 +253,6 @@ app.post("/payments/create", async (req, res) => {
       });
     }
 
-Follenvajder, [02.02.2026 0:19]
 if (!db.users[telegramId]) {
       db.users[telegramId] = {
         telegramId,
@@ -282,7 +279,7 @@ if (!db.users[telegramId]) {
     }
 
     const now = new Date().toISOString();
-    const orderId = tg-${telegramId}-${Date.now()};
+    const orderId = `tg-${telegramId}-${Date.now()}`;
 
     // Создаем заказ в "БД"
     db.orders[orderId] = {
@@ -299,7 +296,7 @@ if (!db.users[telegramId]) {
       TerminalKey: TINKOFF_TERMINAL_KEY,
       Amount: Math.round(amount * 100),
       OrderId: orderId,
-      Description: Пополнение баланса для Telegram ID ${telegramId},
+      Description: `Пополнение баланса для Telegram ID ${telegramId}`,
       SuccessURL:
         TINKOFF_SUCCESS_URL || "https://t.me/your_bot_username?start=payment_success",
       FailURL:
@@ -381,7 +378,7 @@ app.post("/payments/webhook", async (req, res) => {
     if (!payment) {
       console.warn("⚠️ Payment not found for webhook, creating stub record");
       payment = {
-        id: OrderId || p-${PaymentId},
+        id: `OrderId || p-${PaymentId}`,
         telegramId: null,
         amount: Amount ? Amount / 100 : 0,
         status: Status || "UNKNOWN",
@@ -392,7 +389,6 @@ app.post("/payments/webhook", async (req, res) => {
       db.payments.push(payment);
     }
 
-Follenvajder, [02.02.2026 0:19]
 const now = new Date().toISOString();
     payment.history = payment.history || [];
     payment.history.push({
@@ -441,7 +437,7 @@ const now = new Date().toISOString();
         if (!payment.notificationSent) {
           await notifyUser(
             payment.telegramId,
-            ✅ Оплата успешно подтверждена.\nСумма: ${Amount / 100} ₽
+            `✅ Оплата успешно подтверждена.\nСумма: ${Amount / 100} ₽`
           );
           payment.notificationSent = true;
         }
@@ -493,12 +489,11 @@ const now = new Date().toISOString();
           return res.json({ success: true, message: "Already processed" });
         }
 
-Follenvajder, [02.02.2026 0:19]
 payment.status = "REFUNDED";
         if (!payment.refunds) payment.refunds = [];
         
         // Проверяем, не был ли баланс уже уменьшен для этой суммы возврата
-        const refundKey = refund_${refundAmount}_${Math.floor(new Date(now).getTime() / 60000)};
+        const refundKey = `refund_${refundAmount}_${Math.floor(new Date(now).getTime() / 60000)}`;
         const wasRefundProcessed = payment.processedRefunds?.includes(refundKey);
         
         if (!wasRefundProcessed) {
@@ -529,7 +524,7 @@ payment.status = "REFUNDED";
         if (!payment.refundNotificationSent || !wasRefundProcessed) {
           await notifyUser(
             payment.telegramId,
-            ↩️ По вашему платежу выполнен возврат.\nСумма: ${refundAmount} ₽
+            `↩️ По вашему платежу выполнен возврат.\nСумма: ${refundAmount} ₽`
           );
           payment.refundNotificationSent = true;
         }
@@ -617,7 +612,6 @@ app.post("/payments/:paymentId/refund", async (req, res) => {
       return res.status(404).json({ success: false, error: "Payment not found" });
     }
 
-Follenvajder, [02.02.2026 0:19]
 const refundAmount = amount ? Number(amount) : Number(payment.amount);
     if (!refundAmount || refundAmount <= 0) {
       return res.status(400).json({ success: false, error: "Invalid refund amount" });
@@ -663,7 +657,7 @@ const refundAmount = amount ? Number(amount) : Number(payment.amount);
 
     await notifyUser(
       payment.telegramId,
-      ↩️ По вашему платежу выполнен возврат.\nСумма: ${refundAmount} ₽
+      `↩️ По вашему платежу выполнен возврат.\nСумма: ${refundAmount} ₽`
     );
 
     res.json({ success: true });
@@ -768,7 +762,6 @@ app.post("/cart/add", (req, res) => {
   }
 });
 
-Follenvajder, [02.02.2026 0:19]
 // 3. ОБНОВИТЬ количество (POST)
 app.post("/cart/update", (req, res) => {
   try {
@@ -915,7 +908,6 @@ app.post("/cart/clear", (req, res) => {
   }
 });
 
-Follenvajder, [02.02.2026 0:19]
 // --- Balance operations (старые методы для совместимости) ---
 app.post("/users/:telegramId/balance/add", (req, res) => {
   try {
@@ -986,12 +978,12 @@ app.post("/orders", (req, res) => {
       return res.status(400).json({ error: "Missing telegramId" });
     }
 
-    const orderId = order-${telegramId}-${Date.now()};
+    const orderId = `order-${telegramId}-${Date.now()}`;
     const now = new Date().toISOString();
     
     // Получаем информацию о пользователе
     const user = db.users[telegramId];
-    const userName = user ? (user.firstName  user.username  User_${telegramId.slice(-4)}`) : `User_${telegramId.slice(-4)};
+    const userName = user ? (user.firstName || user.username || `User_${telegramId.slice(-4)}`) : `User_${telegramId.slice(-4)}`;
     
     db.orders[orderId] = {
       orderId,
@@ -1005,10 +997,10 @@ app.post("/orders", (req, res) => {
       // Детальная информация о каждом товаре
       itemsDetails: (items || []).map(item => ({
         productId: item.productId || item.id,
-        name: item.name  item.title  "Unknown",
+        name: item.name || item.title || "Unknown",
         price: item.price || 0,
         quantity: item.quantity || 1,
-        total: (item.price  0) * (item.quantity  1)
+        total: (item.price || 0) * (item.quantity || 1)
       }))
     };
     
@@ -1032,7 +1024,7 @@ app.post("/orders", (req, res) => {
 app.post("/reviews", (req, res) => {
   try {
     const reviewData = req.body || {};
-    const telegramId = String(reviewData.userId  reviewData.telegramId  "");
+    const telegramId = String(reviewData.userId || reviewData.telegramId || "");
     
     console.log("📝 Review submission:", { telegramId, textLength: reviewData.text ? reviewData.text.length : 0 });
     
@@ -1044,7 +1036,6 @@ app.post("/reviews", (req, res) => {
       return res.status(400).json({ error: "Review text must be at least 5 characters" });
     }
 
-Follenvajder, [02.02.2026 0:19]
 const existingReviewIndex = db.reviews.findIndex(review => review.userId === telegramId);
     if (existingReviewIndex >= 0) {
       return res.status(400).json({ error: "User has already submitted a review" });
