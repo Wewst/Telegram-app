@@ -1020,6 +1020,32 @@ app.post("/orders", (req, res) => {
   }
 });
 
+// Получить все заказы пользователя (добыча)
+app.get("/orders/user/:telegramId", (req, res) => {
+  try {
+    const telegramId = req.params.telegramId;
+    
+    // Находим все заказы пользователя
+    const userOrders = Object.values(db.orders).filter(
+      order => order.telegramId === telegramId && order.status === "completed"
+    );
+    
+    // Сортируем по дате (новые сначала)
+    userOrders.sort((a, b) => {
+      const dateA = new Date(a.orderDate || a.createdAt || 0);
+      const dateB = new Date(b.orderDate || b.createdAt || 0);
+      return dateB - dateA;
+    });
+    
+    console.log("📦 Orders for user:", telegramId, "count:", userOrders.length);
+    res.json({ success: true, orders: userOrders });
+    
+  } catch (error) {
+    console.error("❌ Get user orders error:", error);
+    res.status(500).json({ success: false, error: "Internal server error", orders: [] });
+  }
+});
+
 // --- Reviews ---
 app.post("/reviews", (req, res) => {
   try {
