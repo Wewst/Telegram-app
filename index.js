@@ -985,13 +985,16 @@ app.post("/orders", (req, res) => {
     const user = db.users[telegramId];
     const userName = user ? (user.firstName || user.username || `User_${telegramId.slice(-4)}`) : `User_${telegramId.slice(-4)}`;
     
+    // Убеждаемся что статус всегда "completed" (строка)
+    const orderStatus = (status || "completed").toString().toLowerCase() === "completed" ? "completed" : "completed";
+    
     db.orders[orderId] = {
       orderId,
       telegramId,
       userName: userName,
       items: items || [],
       total: total || 0,
-      status: status || "completed",
+      status: orderStatus, // Всегда "completed" как строка
       orderDate: orderDate || now,
       createdAt: now,
       // Детальная информация о каждом товаре
@@ -1000,6 +1003,8 @@ app.post("/orders", (req, res) => {
         name: item.name || item.title || "Unknown",
         price: item.price || 0,
         quantity: item.quantity || 1,
+        image: item.image || item.imageUrl || '',
+        description: item.description || '',
         total: (item.price || 0) * (item.quantity || 1)
       }))
     };
@@ -1009,8 +1014,11 @@ app.post("/orders", (req, res) => {
       user: telegramId, 
       userName: userName,
       total, 
+      status: db.orders[orderId].status,
+      statusType: typeof db.orders[orderId].status,
       itemsCount: items ? items.length : 0,
-      items: items
+      items: items,
+      itemsDetails: db.orders[orderId].itemsDetails
     });
     res.json({ success: true, orderId, order: db.orders[orderId] });
     
@@ -1025,10 +1033,36 @@ app.get("/orders/user/:telegramId", (req, res) => {
   try {
     const telegramId = req.params.telegramId;
     
-    // Находим все заказы пользователя
-    const userOrders = Object.values(db.orders).filter(
-      order => order.telegramId === telegramId && order.status === "completed"
+    // Получаем все заказы пользователя
+    const allUserOrders = Object.values(db.orders).filter(
+      order => order.telegramId === telegramId
     );
+    
+    console.log("📦 Все заказы пользователя:", telegramId, "всего:", allUserOrders.length);
+    allUserOrders.forEach((order, idx) => {
+      console.log(`  Заказ ${idx + 1}:`, {
+        orderId: order.orderId,
+        status: order.status,
+        statusType: typeof order.status,
+        itemsCount: order.items?.length || 0,
+        itemsDetailsCount: order.itemsDetails?.length || 0
+      });
+    });
+    
+    // Находим завершенные заказы (проверяем оба варианта статуса)
+    const userOrders = allUserOrders.filter(order => {
+      const status = String(order.status || '').toLowerCase();
+      return status === 'completed';
+    });
+    
+    console.log("📦 Завершенные заказы:", userOrders.length);
+    userOrders.forEach((order, idx) => {
+      console.log(`  ✅ Заказ ${idx + 1}:`, {
+        orderId: order.orderId,
+        items: order.items?.length || 0,
+        itemsDetails: order.itemsDetails?.length || 0
+      });
+    });
     
     // Сортируем по дате (новые сначала)
     userOrders.sort((a, b) => {
