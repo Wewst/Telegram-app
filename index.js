@@ -1038,6 +1038,18 @@ app.get("/orders/user/:telegramId", (req, res) => {
     });
     
     console.log("📦 Orders for user:", telegramId, "count:", userOrders.length);
+    
+    // Детальное логирование для отладки
+    userOrders.forEach((order, idx) => {
+      console.log(`📦 Заказ ${idx + 1}:`, {
+        orderId: order.orderId,
+        status: order.status,
+        itemsCount: order.items?.length || 0,
+        items: order.items,
+        itemsDetails: order.itemsDetails
+      });
+    });
+    
     res.json({ success: true, orders: userOrders });
     
   } catch (error) {
